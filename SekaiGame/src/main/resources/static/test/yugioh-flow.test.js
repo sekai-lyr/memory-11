@@ -108,7 +108,64 @@ describe("游戏王式核心回合", () => {
         state.players[0].monsterZone = [attacker];
         controller.selectAttacker(attacker);
         assert.equal(state.phase, PHASE.BATTLE);
-        assert.equal(state.selectedAttacker, attacker);
+        assert.equal(state.selectedAttacker, null);
+        assert.equal(attacker.hasAttackedThisTurn, true);
+        assert.equal(state.players[1].lp, 6400);
+    });
+
+    test("三只怪兽在同一战斗阶段可以连续攻击", () => {
+        const { state, engine } = makeGame();
+        const controller = new GameController(state, engine, uiStub());
+        controller.mode = "local";
+        state.currentPlayerIndex = 0;
+        state.turn = 3;
+        state.firstTurn = false;
+        state.phase = PHASE.MAIN_1;
+        const attackers = [1200, 1400, 1600].map((attack, index) => {
+            const card = createCardInstance(monster(`attacker_${index}`, 4, attack));
+            card.canAttack = true;
+            return card;
+        });
+        state.players[0].monsterZone = attackers;
+        state.players[1].monsterZone = [];
+
+        attackers.forEach(attacker => controller.selectAttacker(attacker));
+
+        assert.equal(state.phase, PHASE.BATTLE);
+        assert.equal(state.selectedAttacker, null);
+        assert.deepEqual(attackers.map(card => card.hasAttackedThisTurn), [true, true, true]);
+        assert.equal(state.players[1].lp, 3800);
+    });
+
+    test("普通攻击动画不应锁住后续合法攻击", () => {
+        const { state, engine, controller } = (() => {
+            const state = new GameState();
+            state.players = [
+                new Player("P1", Array.from({ length: 40 }, (_, index) => monster(`a${index}`))),
+                new Player("P2", Array.from({ length: 40 }, (_, index) => monster(`b${index}`))),
+            ];
+            const ui = uiStub();
+            const engine = new GameEngine(state);
+            return { state, engine, controller: new GameController(state, engine, ui) };
+        })();
+        controller.mode = "local";
+        state.currentPlayerIndex = 0;
+        state.turn = 3;
+        state.firstTurn = false;
+        state.phase = PHASE.BATTLE;
+        const attacker = createCardInstance(monster("browser_like_attacker", 4, 1200));
+        attacker.canAttack = true;
+        state.players[0].monsterZone = [attacker];
+        state.players[1].monsterZone = [];
+        const previousDocument = global.document;
+        global.document = { querySelectorAll: () => [], querySelector: () => null };
+        try {
+            controller.selectAttacker(attacker);
+            assert.equal(controller.effectBusy, false);
+        } finally {
+            if (previousDocument === undefined) delete global.document;
+            else global.document = previousDocument;
+        }
     });
 
     test("战斗后再从手牌操作会自动进入主要阶段2", () => {

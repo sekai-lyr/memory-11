@@ -43,9 +43,9 @@ export function getPackPool(packDef, cardDatabase) {
 }
 
 export function getEffectiveRates(pityCount) {
-    if (pityCount >= 100) return { N: 0, R: 0, SR: 0, SSR: 0, UR: 1.0 };
-    if (pityCount >= 70) {
-        const bonus = (pityCount - 69) * 0.0332;
+    if (pityCount >= 50) return { N: 0, R: 0, SR: 0, SSR: 0, UR: 1.0 };
+    if (pityCount >= 35) {
+        const bonus = (pityCount - 34) * 0.0332;
         return {
             N: Math.max(0, PACK_RATES.N - bonus * 0.62),
             R: Math.max(0, PACK_RATES.R - bonus * 0.25),
@@ -129,5 +129,5 @@ export function calculatePity(packsSinceUR, gotUR) {
 }
 
 export function shouldGuaranteeUR(packsSinceUR) {
-    return packsSinceUR >= 100;
+    return packsSinceUR >= 50;
 }

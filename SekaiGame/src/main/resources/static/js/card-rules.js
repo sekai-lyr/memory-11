@@ -1,5 +1,6 @@
 // The compact rule layer used by every card source in the published client.
 import { designRarityRules } from "./rarity-rules.js?v=1.3.2";
+import { authoredCardRules, hasAuthoredRules } from "./authored-card-rules.js";
 const effect = (type, value, description, target) => ({ trigger: "manual", type, value, ...(target ? { target } : {}), description });
 const ENEMY_BEST = { owner: "opponent", zone: "monster", selector: "highestAttack", count: 1 };
 const ENEMY_WEAKEST = { owner: "opponent", zone: "monster", selector: "lowestAttack", count: 1 };
@@ -112,7 +113,7 @@ function galleryEffect(card) {
         return [
             effect("healPlayer", 1000 + boost, `回复${1000 + boost}LP。`),
             effect("buffAllAlliesAttack", boost, `己方场上全部怪兽攻击力上升${boost}。`),
-            effect("cannotBeAttacked", 0, "己方全部怪兽本回合不会被战斗破坏。", { owner: "self", zone: "monster", selector: "all" }),
+            effect("cannotBeAttacked", 0, "己方全部怪兽本回合不能被攻击。", { owner: "self", zone: "monster", selector: "all" }),
         ];
     }
     const patterns = [
@@ -155,6 +156,12 @@ function fallbackEffect(card) {
 export function applyPlayableRules(card) {
     if (!card) return card;
     const normalized = balanceMonsterStats({ ...card, enabled: card.enabled !== false });
+    normalized.lore = typeof normalized.lore === "string" ? normalized.lore : "";
+    normalized.aiHints = {
+        role: normalized.type === "monster" ? "attacker" : normalized.type === "trap" ? "counter" : "support",
+        priority: 0,
+        ...(normalized.aiHints || {}),
+    };
     if (normalized.series === "starter_ygo") {
         normalized.effects = Array.isArray(card.effects) ? card.effects : [];
         normalized.description = normalized.effects
@@ -166,6 +173,7 @@ export function applyPlayableRules(card) {
         }
         return normalized;
     }
+    if (hasAuthoredRules(normalized.id)) return authoredCardRules(normalized);
     const designed = designRarityRules(normalized);
     if (designed) {
         Object.assign(normalized, designed);

@@ -14,14 +14,15 @@ import {
     setSelectedArt,
     spendDuelPoints,
 } from "./collection.js?v=1.7.0";
-import { ALL_CARDS, getCardArts, getCardById, hydrateCardArt } from "./catalog.js?v=1.8.4";
+import { ALL_CARDS, getCardArts, getCardById, hydrateCardArt } from "./catalog.js?v=1.8.6-original";
 import { NIGHTCORD_PACK, openPack, openTenPacks } from "./packs.js?v=1.7.2";
 import { buildSuggestedDeck, getCardCopyLimit, validateDeck } from "./deck.js?v=1.7.4";
 import { saveData } from "./storage.js?v=1.7.4";
 import { loadAuth } from "./auth.js";
-import { createDeck as createServerDeck, deleteDeck as deleteServerDeck, saveUserCollection, updateDeck as updateServerDeck } from "./api.js?v=1.7.4";
-import { cardArtHtml, cardEffectFieldsHtml, catalogCardHtml, escapeHtml, MEMBER_NAMES, TYPE_NAMES, rarityRank } from "./card-view.js?v=1.1.0";
+import { createDeck as createServerDeck, craftCardServer, deleteDeck as deleteServerDeck, dismantleCardServer, openPackServer, saveUserCollection, updateDeck as updateServerDeck } from "./api.js?v=1.7.4";
+import { cardArtHtml, cardEffectFieldsHtml, catalogCardHtml, escapeHtml, MEMBER_NAMES, TYPE_NAMES, rarityRank } from "./card-view.js?v=1.2.0-bca";
 import { AI_STAGES, buildStageDeck, isStageUnlocked } from "./stages.js?v=1.8.2";
+import { playCardIgnition, playDuelLaunch, playPackOverload, selectIgnitionCards } from "./card-ignition.js?v=1.0.1";
 
 const ROUTES = new Set(["home", "shop", "collection", "decks", "rules", "settings"]);
 const NIGHTCORD_ONLY = ALL_CARDS;
@@ -71,6 +72,9 @@ export class CardGameApp {
         this.deckDraft = null;
         this.deckSourceFilter = { search: "", type: "all", attribute: "all", rarity: "all", level: "all", owned: "owned" };
         this.deckViewFilter = "all";
+        this.ignitionAnimation = null;
+        this.launchAnimation = null;
+        this.packAnimation = null;
         this.bindGlobalEvents();
         this.navigate("home");
     }
@@ -126,6 +130,7 @@ export class CardGameApp {
 
     navigate(route) {
         if (!ROUTES.has(route)) route = "home";
+        this.cancelIgnitionAnimation();
         this.route = route;
         this.showShell();
         document.querySelectorAll("[data-route]").forEach(button => {
@@ -137,6 +142,15 @@ export class CardGameApp {
         if (route === "decks") this.renderDeckEditor(true);
         if (route === "rules") this.renderRules();
         if (route === "settings") this.renderSettings();
+    }
+
+    cancelIgnitionAnimation() {
+        this.ignitionAnimation?.cancel?.();
+        this.launchAnimation?.cancel?.();
+        this.packAnimation?.cancel?.();
+        this.ignitionAnimation = null;
+        this.launchAnimation = null;
+        this.packAnimation = null;
     }
 
     renderTopbar() {
@@ -156,27 +170,76 @@ export class CardGameApp {
             .slice(-4)
             .map(([id, count]) => ({ card: hydrateCardArt(getCardById(id), this.collection.selectedArtByCard), count }))
             .filter(item => item.card);
-        const pity = getPityCount(this.collection, NIGHTCORD_PACK.id);
+        const fallbackCards = NIGHTCORD_ONLY.slice(0, 8).map(card => hydrateCardArt(card, this.collection.selectedArtByCard));
+        const ignitionCards = selectIgnitionCards([
+            cover,
+            ...recentCards.map(item => item.card),
+            ...Object.entries(this.collection.cards)
+                .filter(([, count]) => count > 0)
+                .slice(-12)
+                .map(([id]) => hydrateCardArt(getCardById(id), this.collection.selectedArtByCard)),
+            ...fallbackCards,
+        ], 8);
+        const heroCard = cover || ignitionCards[0] || fallbackCards[0];
+        const flightPositions = [
+            [-270, -168, -13], [254, -174, 12], [-336, 56, -9], [326, 72, 11],
+            [-190, 216, -18], [210, 222, 16], [-78, -238, 8], [92, 244, -12],
+        ];
 
         this.screenRoot.innerHTML = `
-            <section class="home-hero">
-                <div class="hero-copy">
-                    <span class="eyebrow">NIGHTCORD DUEL NETWORK</span>
-                    <h1>让你的收藏，真正进入决斗。</h1>
-                    <p>抽取主题卡牌、编辑主卡组，并在完整的回合制战场中挑战AI。</p>
-                    <div class="hero-actions">
-                        <button class="primary-action" id="home-stage-duel" ${validation.valid ? "" : "disabled"}>挑战关卡</button>
-                        <button class="secondary-action" id="home-start-duel" ${validation.valid ? "" : "disabled"}>练习决斗</button>
-                        <button class="secondary-action" id="home-pvp-create" ${validation.valid ? "" : "disabled"}>创建房间</button>
-                        <button class="secondary-action" id="home-pvp-join">加入房间</button>
-                        <button class="secondary-action" data-jump="decks">编辑卡组</button>
+            <section class="home-ignition" data-ignition-root>
+                <div class="ignition-noise" aria-hidden="true"></div>
+                <div class="ignition-sigil" aria-hidden="true"><span></span><i></i></div>
+                <div class="ignition-speed-lines" aria-hidden="true"><b></b><b></b><b></b><b></b></div>
+                <div class="ignition-flight-layer">
+                    ${ignitionCards.map((card, index) => {
+                        const [x, y, rotate] = flightPositions[index] || [0, 0, 0];
+                        return `<div class="ignition-flight" data-ignite-x="${x}" data-ignite-y="${y}" data-ignite-rotate="${rotate}">
+                            <button class="ignition-card rarity-${escapeHtml(card.rarity || "N")}" data-card-id="${escapeHtml(card.id)}" data-ignite-rotate="${rotate}" type="button" aria-label="查看${escapeHtml(card.name)}">
+                                ${cardArtHtml(card, "ignition-card-art", true)}
+                                <span class="ignition-card-rarity">${escapeHtml(card.rarity || "N")}</span>
+                            </button>
+                        </div>`;
+                    }).join("")}
+                </div>
+                <button class="ignition-hero-card" data-card-id="${escapeHtml(heroCard?.id || "")}" type="button" aria-label="查看当前主卡">
+                    ${heroCard ? cardArtHtml(heroCard, "ignition-hero-art", true) : "<span class='art-placeholder'><span>?</span></span>"}
+                    <span class="ignition-hero-edge"></span>
+                    <span class="ignition-hero-caption"><small>SELECTED COVER</small><strong>${escapeHtml(heroCard?.name || "未选择主卡")}</strong></span>
+                </button>
+                <div class="ignition-copy">
+                    <span class="eyebrow">SEKAI // CARD IGNITION</span>
+                    <span class="ignition-kicker">THE DUEL IS WAITING</span>
+                    <h1 class="ignition-title">把你的牌，<br><em>打出世界。</em></h1>
+                    <p class="ignition-subtitle">从一张卡开始，组建你的主卡组，进入 Nightcord 的回合制决斗。</p>
+                    <div class="ignition-actions">
+                        <button class="primary-action ignition-primary-action" id="home-start-duel" ${validation.valid ? "" : "disabled"}><span>揭牌</span><small>开始决斗</small></button>
+                        <button class="secondary-action ignition-secondary-action" id="home-stage-duel" ${validation.valid ? "" : "disabled"}>挑战关卡</button>
+                        <button class="secondary-action ignition-secondary-action" data-jump="decks">编辑卡组</button>
+                    </div>
+                    <div class="ignition-quick-actions">
+                        <button class="text-action" id="home-pvp-create" ${validation.valid ? "" : "disabled"}>创建房间</button>
+                        <button class="text-action" id="home-pvp-join">加入房间</button>
+                        <button class="text-action" data-jump="collection">打开收藏</button>
+                        <button class="text-action" data-replay-ignition>重播演出 ↗</button>
                     </div>
                     ${validation.valid ? "" : `<p class="validation-line">当前卡组不可用：${escapeHtml(validation.errors[0])}</p>`}
                 </div>
-                <div class="hero-art">${cover ? cardArtHtml(cover, "hero-cover", true) : ""}<div class="hero-vignette"></div></div>
+                <aside class="ignition-dock">
+                    <div class="ignition-dock-label"><span>ACTIVE DECK</span><strong>${escapeHtml(deck?.name || "未选择卡组")}</strong></div>
+                    <div class="ignition-dock-stats">
+                        <div><strong>${validation.stats?.total || deck?.main?.length || 0}</strong><span>CARDS</span></div>
+                        <div><strong>${validation.stats?.monsters || 0}</strong><span>MONSTERS</span></div>
+                        <div><strong>${validation.stats?.spells || 0}</strong><span>MAGIC</span></div>
+                        <div><strong>${validation.stats?.traps || 0}</strong><span>TRAPS</span></div>
+                    </div>
+                    <div class="ignition-dock-status"><span class="status-dot ${validation.valid ? "ready" : "idle"}"></span><span>${validation.valid ? "DUEL READY" : "DECK NEEDS WORK"}</span><small>/// 01</small></div>
+                </aside>
+                <div class="ignition-launch-overlay" aria-hidden="true"></div>
+                <div class="ignition-stage-mark" aria-hidden="true"><span>01</span><i></i><span>DECK / COVER / DUEL</span></div>
             </section>
 
-            <section class="dashboard-grid">
+            <section class="dashboard-grid ignition-dashboard">
                 <article class="dashboard-panel deck-panel">
                     <div class="panel-heading"><div><span class="eyebrow">MAIN DECK</span><h2>${escapeHtml(deck?.name || "未选择卡组")}</h2></div><span class="status-pill ${validation.valid ? "ok" : "bad"}">${validation.valid ? "可出战" : "需调整"}</span></div>
                     <div class="deck-summary">
@@ -200,12 +263,36 @@ export class CardGameApp {
                 <div class="recent-grid">${recentCards.length ? recentCards.map(({ card, count }) => catalogCardHtml(card, count, { compact: true })).join("") : "<p class='empty-copy'>收藏还没有卡牌。</p>"}</div>
             </section>`;
 
-        this.screenRoot.querySelector("#home-start-duel")?.addEventListener("click", () => this.startDuel());
-        this.screenRoot.querySelector("#home-stage-duel")?.addEventListener("click", () => this.showStageModal());
+        const ignitionRoot = this.screenRoot.querySelector("[data-ignition-root]");
+        this.ignitionAnimation = playCardIgnition(ignitionRoot, { reducedMotion: this.collection.settings?.reduceAnimations });
+        this.screenRoot.querySelector("#home-start-duel")?.addEventListener("click", () => this.playHomeLaunch(() => this.startDuel()));
+        this.screenRoot.querySelector("#home-stage-duel")?.addEventListener("click", () => this.playHomeLaunch(() => this.showStageModal()));
         this.screenRoot.querySelector("#home-pvp-create")?.addEventListener("click", () => this.createPvpRoom());
         this.screenRoot.querySelector("#home-pvp-join")?.addEventListener("click", () => this.showJoinPvpModal());
+        this.screenRoot.querySelector("[data-replay-ignition]")?.addEventListener("click", () => {
+            this.ignitionAnimation?.cancel?.();
+            this.ignitionAnimation = playCardIgnition(ignitionRoot, { reducedMotion: this.collection.settings?.reduceAnimations });
+        });
+        ignitionRoot?.querySelectorAll(".ignition-card, .ignition-hero-card").forEach(element => element.addEventListener("click", () => {
+            this.selectedCollectionCardId = element.dataset.cardId;
+            this.navigate("collection");
+        }));
         this.bindJumpButtons();
         this.bindCardDetailClicks();
+    }
+
+    playHomeLaunch(onComplete) {
+        const root = this.screenRoot.querySelector("[data-ignition-root]");
+        const done = typeof onComplete === "function" ? onComplete : () => {};
+        if (!root) {
+            done();
+            return;
+        }
+        this.launchAnimation?.cancel?.();
+        this.launchAnimation = playDuelLaunch(root, {
+            reducedMotion: this.collection.settings?.reduceAnimations,
+            onComplete: done,
+        });
     }
 
     renderShop() {
@@ -219,8 +306,8 @@ export class CardGameApp {
                     <div class="featured-pack-content">
                         <div class="pack-tags"><span>${NIGHTCORD_ONLY.length}张基础卡</span><span>全卡池</span><span>UR 0.5%</span></div>
                         <h2>次元全明星卡池</h2>
-                        <p>每包8张，第8张至少R。十包抽取至少包含一张SR；最晚第100包获得UR。</p>
-                        <div class="pity-block"><div><span>UR保底</span><strong>${pity} / 100</strong></div><div class="progress-track"><span style="width:${Math.min(100, pity / 100 * 100)}%"></span></div></div>
+                        <p>每包8张，第8张至少R。十包抽取至少包含一张SR；最晚第50包获得UR。</p>
+                        <div class="pity-block"><div><span>UR保底</span><strong>${pity} / 50</strong></div><div class="progress-track"><span style="width:${Math.min(100, pity / 50 * 100)}%"></span></div></div>
                         <div class="purchase-row">
                             <button class="pack-buy" data-open-count="1"><span>抽取1包</span><strong>1000 决斗币</strong></button>
                             <button class="pack-buy featured" data-open-count="10"><span>抽取10包</span><strong>9000 决斗币</strong></button>
@@ -252,8 +339,32 @@ export class CardGameApp {
         this.modalRoot.querySelector("#confirm-pack-open")?.addEventListener("click", () => this.openPacks(count));
     }
 
-    openPacks(count) {
+    async openPacks(count) {
         const cost = count === 10 ? NIGHTCORD_PACK.tenCost.duelCoins : NIGHTCORD_PACK.cost.duelCoins;
+        const auth = loadAuth();
+        if (auth?.userId) {
+            const serverResult = await openPackServer(auth.userId, "nightcord", count === 10 ? 80 : 8);
+            if (!serverResult.success) {
+                this.toast(serverResult.reason || "卡包开启失败", "error");
+                return;
+            }
+            const serverCards = (serverResult.cards || [])
+                .map(item => getCardById(item.id))
+                .filter(Boolean);
+            if (serverCards.length === 0) {
+                this.toast("服务器没有返回有效卡牌", "error");
+                return;
+            }
+            const reveals = serverCards.map(card => this.collectPulledCard(card));
+            this.collection.currency.duelCoins = Number(serverResult.duelCoins ?? Math.max(0, this.collection.currency.duelCoins - cost));
+            if (serverResult.shards) this.collection.currency.shards = { ...this.collection.currency.shards, ...serverResult.shards };
+            if (serverResult.pityCounters) this.collection.pityCounters = serverResult.pityCounters;
+            this.collection.statistics.packsOpened = Number(serverResult.packsOpened ?? (this.collection.statistics.packsOpened + count));
+            saveData(this.collection);
+            this.renderTopbar();
+            this.showPackAnimation(reveals, count);
+            return;
+        }
         if (!spendDuelPoints(this.collection, cost)) {
             this.toast("决斗币不足", "error");
             return;
@@ -279,7 +390,7 @@ export class CardGameApp {
         }
         this.collection.statistics.packsOpened += count;
         saveData(this.collection);
-        this.syncCollectionToServer();
+        await this.syncCollectionToServer();
         this.renderTopbar();
         this.showPackAnimation(reveals, count);
     }
@@ -301,13 +412,28 @@ export class CardGameApp {
 
     showPackAnimation(reveals, count) {
         const highest = [...reveals].sort((a, b) => rarityRank(b.card.rarity) - rarityRank(a.card.rarity))[0]?.card.rarity || "N";
+        const previewPositions = [[-280, -12, -14], [-196, -42, -8], [-112, -66, -4], [-28, -78, 0], [56, -66, 5], [140, -42, 9], [224, -12, 14], [92, 34, 18]];
+        const previewCards = reveals.slice(0, 8);
         this.openModal(`
-            <section class="pack-opening-stage rarity-${escapeHtml(highest)}" id="pack-opening-stage">
-                <div class="pack-orbit"></div>
+            <section class="pack-opening-stage kinetic-pack-stage rarity-${escapeHtml(highest)}" id="pack-opening-stage">
+                <div class="pack-orbit" aria-hidden="true"></div>
+                <div class="pack-burst" aria-hidden="true"></div>
+                <div class="pack-preview-rail" aria-label="抽取预览">
+                    ${previewCards.map((item, index) => {
+                        const [x, y, rotate] = previewPositions[index] || [0, 0, 0];
+                        return `<article class="pack-preview-card rarity-${escapeHtml(item.card.rarity)}" data-pack-x="${x}" data-pack-rotate="${rotate}">${cardArtHtml(item.card, "pack-preview-art", true)}<span>${escapeHtml(item.card.rarity)}</span></article>`;
+                    }).join("")}
+                </div>
                 <div class="digital-pack"><span>25:00</span><strong>NIGHTCORD</strong><small>${count === 10 ? "TEN PACKS" : "SELECTION PACK"}</small></div>
-                <p>抽取结果已确定</p>
-                <button class="primary-action" id="reveal-pack-results">揭晓结果</button>
+                <div class="pack-stage-copy"><p>牌包已锁定 · ${count === 10 ? "十包" : "单包"}抽取完成</p><small>最高稀有度：${escapeHtml(highest)}</small></div>
+                <div class="pack-stage-actions"><button class="primary-action" id="reveal-pack-results">揭晓结果</button><button class="secondary-action" id="skip-pack-animation">跳过演出</button></div>
             </section>`);
+        const stage = this.modalRoot.querySelector("#pack-opening-stage");
+        this.packAnimation = playPackOverload(stage, { reducedMotion: this.collection.settings?.reduceAnimations });
+        this.modalRoot.querySelector("#skip-pack-animation")?.addEventListener("click", () => {
+            this.packAnimation?.cancel?.();
+            this.showPackResults(reveals, count);
+        });
         this.modalRoot.querySelector("#reveal-pack-results")?.addEventListener("click", () => this.showPackResults(reveals, count));
     }
 
@@ -380,7 +506,21 @@ export class CardGameApp {
             saveData(this.collection);
             this.renderCollection();
         }));
-        this.screenRoot.querySelector("#craft-card")?.addEventListener("click", () => {
+        this.screenRoot.querySelector("#craft-card")?.addEventListener("click", async () => {
+            const auth = loadAuth();
+            if (auth?.userId) {
+                const result = await craftCardServer(auth.userId, selected.id);
+                if (!result.success) {
+                    this.toast(result.reason || "制作失败", "error");
+                    return;
+                }
+                this.collection.cards[selected.id] = result.count || 1;
+                this.collection.currency.shards = { ...this.collection.currency.shards, ...(result.shards || {}) };
+                saveData(this.collection);
+                this.toast(`制作成功：${selected.name}`, "success");
+                this.renderCollection();
+                return;
+            }
             const result = craftCard(this.collection, selected.id, ALL_CARDS);
             this.toast(result.success ? `制作成功：${selected.name}` : result.reason, result.success ? "success" : "error");
             if (result.success) {
@@ -389,7 +529,23 @@ export class CardGameApp {
             }
             this.renderCollection();
         });
-        this.screenRoot.querySelector("#dismantle-card")?.addEventListener("click", () => {
+        this.screenRoot.querySelector("#dismantle-card")?.addEventListener("click", async () => {
+            const auth = loadAuth();
+            if (auth?.userId) {
+                const result = await dismantleCardServer(auth.userId, selected.id);
+                if (!result.success) {
+                    this.toast(result.reason || "分解失败", "error");
+                    return;
+                }
+                const nextCount = getCardCount(this.collection, selected.id) - 1;
+                if (nextCount > 0) this.collection.cards[selected.id] = nextCount;
+                else delete this.collection.cards[selected.id];
+                this.collection.currency.shards = { ...this.collection.currency.shards, ...(result.shards || {}) };
+                saveData(this.collection);
+                this.toast(`分解成功：+${result.shardsEarned || 0} ${selected.rarity}碎片`, "success");
+                this.renderCollection();
+                return;
+            }
             const result = dismantleCard(this.collection, selected.id, ALL_CARDS);
             this.toast(result.success ? `分解成功：+${result.shards} ${selected.rarity}碎片` : result.reason, result.success ? "success" : "error");
             if (result.success) {
@@ -402,15 +558,12 @@ export class CardGameApp {
 
     async syncCollectionToServer() {
         const auth = loadAuth();
-        if (!auth?.userId) return;
+        if (!auth?.userId) return null;
         const result = await saveUserCollection(auth.userId, {
             cards: this.collection.cards,
-            duelCoins: this.collection.currency.duelCoins,
-            shards: this.collection.currency.shards,
-            pityCounters: this.collection.pityCounters,
-            packsOpened: this.collection.statistics.packsOpened,
         });
         if (!result.success) this.toast("云端收藏同步失败，数据已保存在本机", "error");
+        return result;
     }
 
     filterCollectionCard(card) {
@@ -822,7 +975,7 @@ export class CardGameApp {
             const stage = AI_STAGES.find(item => item.id === button.dataset.stageId);
             if (!stage) return;
             this.closeModal();
-            this.startDuel(stage);
+            this.playHomeLaunch(() => this.startDuel(stage));
         }));
     }
 
@@ -872,9 +1025,11 @@ export class CardGameApp {
                 pvp.onGameStart = (info) => {
                     pvp.onError = msg => this.toast(msg || "PvP同步失败", "error");
                     this.closeModal();
-                    this.hideShell();
-                    this.toast(`${info.opponentName} 已加入！你是${info.yourIndex === info.firstPlayer ? "先攻" : "后攻"}`, "success");
-                    this.onStartDuel({ mode: "pvp", deck: selectedDeck, pvpClient: pvp, gameInfo: info });
+                    this.playHomeLaunch(() => {
+                        this.hideShell();
+                        this.toast(`${info.opponentName} 已加入！你是${info.yourIndex === info.firstPlayer ? "先攻" : "后攻"}`, "success");
+                        this.onStartDuel({ mode: "pvp", deck: selectedDeck, pvpClient: pvp, gameInfo: info });
+                    });
                 };
                 const name = this.collection.profile?.name || "Player";
                 pvp.createRoom(name);
@@ -928,9 +1083,11 @@ export class CardGameApp {
                 pvp.onGameStart = (info) => {
                     pvp.onError = msg => this.toast(msg || "PvP同步失败", "error");
                     this.closeModal();
-                    this.hideShell();
-                    this.toast(`${info.opponentName} 的房间！你是${info.yourIndex === info.firstPlayer ? "先攻" : "后攻"}`, "success");
-                    this.onStartDuel({ mode: "pvp", deck, pvpClient: pvp, gameInfo: info });
+                    this.playHomeLaunch(() => {
+                        this.hideShell();
+                        this.toast(`${info.opponentName} 的房间！你是${info.yourIndex === info.firstPlayer ? "先攻" : "后攻"}`, "success");
+                        this.onStartDuel({ mode: "pvp", deck, pvpClient: pvp, gameInfo: info });
+                    });
                 };
                 const name = this.collection.profile?.name || "Player";
                 pvp.joinRoom(roomId, name);
@@ -941,8 +1098,10 @@ export class CardGameApp {
     }
 
     onStartPvp(pvpClient, deck, gameInfo) {
-        this.hideShell();
-        this.onStartDuel({ mode: "pvp", deck, pvpClient, gameInfo });
+        this.playHomeLaunch(() => {
+            this.hideShell();
+            this.onStartDuel({ mode: "pvp", deck, pvpClient, gameInfo });
+        });
     }
 
     getSelectedDeck() {
@@ -966,6 +1125,8 @@ export class CardGameApp {
     }
 
     closeModal() {
+        this.packAnimation?.cancel?.();
+        this.packAnimation = null;
         this.modalRoot.classList.remove("active");
         this.modalRoot.innerHTML = "";
     }

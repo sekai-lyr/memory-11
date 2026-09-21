@@ -149,7 +149,7 @@ function plainRuleDescription(effect) {
 }
 
 function simplifyRules(rules, rarity, forcedLimit = null) {
-    const limit = forcedLimit ?? (rarity === "N" || rarity === "R" ? 1 : 2);
+    const limit = forcedLimit ?? (rarity === "UR" ? 3 : rarity === "N" || rarity === "R" ? 1 : 2);
     return rules.slice(0, limit).map(effect => ({
         ...effect,
         description: plainRuleDescription(effect),

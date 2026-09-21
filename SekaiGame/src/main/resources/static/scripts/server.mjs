@@ -17,16 +17,29 @@ const MIME = {
     ".png": "image/png",
     ".svg": "image/svg+xml",
 };
+const SPA_ROUTES = new Set(["/login", "/register", "/game"]);
 
 function safePath(urlPath) {
-    const pathname = decodeURIComponent((urlPath || "/").split("?")[0]);
-    const requested = pathname === "/" ? "/index.html" : pathname;
+    let pathname;
+    try {
+        pathname = decodeURIComponent((urlPath || "/").split("?")[0]);
+    } catch {
+        return null;
+    }
+    const requested = pathname === "/" || SPA_ROUTES.has(pathname) ? "/index.html" : pathname;
     const resolved = path.resolve(ROOT, "." + requested);
     return resolved.startsWith(ROOT + path.sep) || resolved === ROOT ? resolved : null;
 }
 
 const server = http.createServer(async (request, response) => {
     try {
+        if (request.method !== "GET" && request.method !== "HEAD") {
+            response.writeHead(405, {
+                "Content-Type": "text/plain; charset=utf-8",
+                "Allow": "GET, HEAD",
+            }).end("Method Not Allowed");
+            return;
+        }
         const filePath = safePath(request.url);
         if (!filePath) {
             response.writeHead(403).end("Forbidden");
@@ -39,10 +52,14 @@ const server = http.createServer(async (request, response) => {
         const isCode = [".html", ".css", ".js", ".mjs", ".json"].includes(extension);
         response.writeHead(200, {
             "Content-Type": MIME[extension] || "application/octet-stream",
+            "X-Content-Type-Options": "nosniff",
+            "X-Frame-Options": "DENY",
+            "Referrer-Policy": "same-origin",
+            "Content-Security-Policy": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws: wss:; frame-ancestors 'none'",
             // 开发版代码不缓存，避免修复后浏览器仍运行旧的 ui.js。
             "Cache-Control": isCode ? "no-store, max-age=0" : "public, max-age=86400",
         });
-        response.end(content);
+        response.end(request.method === "HEAD" ? undefined : content);
     } catch (error) {
         response.writeHead(error?.code === "ENOENT" ? 404 : 500, { "Content-Type": "text/plain; charset=utf-8" });
         response.end(error?.code === "ENOENT" ? "Not Found" : "Server Error");

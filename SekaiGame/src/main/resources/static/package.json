@@ -10,6 +10,7 @@
     "selftest": "node scripts/self-play.mjs"
   },
   "dependencies": {
+    "animejs": "^4.5.0",
     "ws": "^8.21.1"
   }
 }

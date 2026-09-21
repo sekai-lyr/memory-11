@@ -4,8 +4,8 @@ Spring Boot 后端服务，为 Nightcord Duel Network 前端提供 REST API。
 
 ## 技术栈
 
-- Java 17
-- Spring Boot 3.2.5
+- Java 21
+- Spring Boot 4.0.5
 - Spring Data JPA
 - MySQL 8.x
 - Spring Security (BCrypt)
@@ -29,17 +29,17 @@ Spring Boot 后端服务，为 Nightcord Duel Network 前端提供 REST API。
 CREATE DATABASE nightcord_duel CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 ```
 
-### 2. 修改配置
+### 2. 配置环境变量
 
-编辑 `src/main/resources/application.yml`，修改数据库连接信息：
+敏感配置不再写入源码。启动前设置：
 
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/nightcord_duel
-    username: your_username
-    password: your_password
+```bash
+set APP_DB_PASSWORD=你的数据库密码
+set APP_JWT_SECRET=至少32位的随机字符串
 ```
+
+可选变量：`APP_DB_URL`、`APP_DB_USERNAME`、`APP_CORS_ALLOWED_ORIGINS`、`APP_JWT_COOKIE_SECURE`、`APP_ADMIN_USERNAME`。
+只有配置了 `APP_SEED_ENABLED=true` 和 `APP_SEED_PASSWORD` 才会创建演示账号。
 
 ### 3. 提取卡牌数据
 
@@ -60,7 +60,9 @@ mvn package
 java -jar target/nightcord-server-1.0.0.jar
 ```
 
-服务启动后访问: http://localhost:8081
+服务启动后访问: http://localhost:8091
+
+完整游戏的浏览器入口为 http://127.0.0.1:8091。前端独立调试时，仍可在 `src/main/resources/static` 执行 `npm start`，地址为 http://127.0.0.1:8080；此模式的本地 PvP 中继使用 8079 端口。
 
 ## API 接口
 
@@ -110,10 +112,10 @@ java -jar target/nightcord-server-1.0.0.jar
 
 ```javascript
 // 示例：获取所有卡牌
-const cards = await fetch('http://localhost:8081/api/cards').then(r => r.json());
+const cards = await fetch('/api/cards').then(r => r.json());
 
 // 示例：用户登录
-const result = await fetch('http://localhost:8081/api/auth/login', {
+const result = await fetch('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: 'player1', password: '123456' })

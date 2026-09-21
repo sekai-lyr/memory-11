@@ -7,6 +7,7 @@ import com.sekai.game.repository.DeckCardRepository;
 import com.sekai.game.repository.DeckRepository;
 import com.sekai.game.repository.CardRepository;
 import com.sekai.game.repository.UserCardRepository;
+import com.sekai.game.repository.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -16,6 +17,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class DeckService {
@@ -32,6 +34,9 @@ public class DeckService {
     @Autowired
     private UserCardRepository userCardRepository;
 
+    @Autowired
+    private UserRepository userRepository;
+
     public List<Deck> getUserDecks(Long userId) {
         return deckRepository.findByUserId(userId);
     }
@@ -45,14 +50,14 @@ public class DeckService {
         if (deckRepository.countByUserId(userId) >= 3) {
             throw new RuntimeException("每个用户最多保存3副卡组");
         }
-        validateOwnedDeck(userId, mainCardIds);
-        User user = new User();
-        user.setId(userId);
+        validateOwnedDeck(userId, mainCardIds, null, null);
+        User user = userRepository.findById(userId)
+            .orElseThrow(() -> new RuntimeException("用户不存在"));
 
         Deck deck = new Deck();
-        deck.setId("deck_" + userId + "_" + System.currentTimeMillis());
+        deck.setId("deck_" + UUID.randomUUID().toString().replace("-", ""));
         deck.setUser(user);
-        deck.setName(name);
+        deck.setName(requireName(name));
         deck.setCoverCardId(coverCardId);
         deck.setIsPreset(false);
 
@@ -79,7 +84,7 @@ public class DeckService {
                            List<String> mainCardIds, List<String> extraCardIds, List<String> sideCardIds) {
         Deck deck = deckRepository.findById(deckId)
             .orElseThrow(() -> new RuntimeException("卡组不存在"));
-        validateOwnedDeck(deck.getUser().getId(), mainCardIds);
+        validateOwnedDeck(deck.getUser().getId(), mainCardIds, extraCardIds, sideCardIds);
 
         if (name != null) deck.setName(name);
         if (coverCardId != null) deck.setCoverCardId(coverCardId);
@@ -120,9 +125,16 @@ public class DeckService {
             .toList();
     }
 
-    private void validateOwnedDeck(Long userId, List<String> mainCardIds) {
+    private void validateOwnedDeck(Long userId, List<String> mainCardIds,
+                                   List<String> extraCardIds, List<String> sideCardIds) {
         if (mainCardIds == null || mainCardIds.size() < 40 || mainCardIds.size() > 60) {
             throw new RuntimeException("主卡组必须为40至60张");
+        }
+        if (extraCardIds != null && extraCardIds.size() > 15) {
+            throw new RuntimeException("额外卡组最多15张");
+        }
+        if (sideCardIds != null && sideCardIds.size() > 15) {
+            throw new RuntimeException("副卡组最多15张");
         }
 
         Map<String, Integer> ownedCounts = new HashMap<>();
@@ -130,7 +142,18 @@ public class DeckService {
             ownedCounts.put(owned.getCard().getId(), owned.getCount())
         );
         Map<String, Integer> deckCounts = new HashMap<>();
-        for (String cardId : mainCardIds) {
+        validateCardSlot(mainCardIds, deckCounts, ownedCounts);
+        validateCardSlot(extraCardIds, deckCounts, ownedCounts);
+        validateCardSlot(sideCardIds, deckCounts, ownedCounts);
+    }
+
+    private void validateCardSlot(List<String> cardIds, Map<String, Integer> deckCounts,
+                                  Map<String, Integer> ownedCounts) {
+        if (cardIds == null) return;
+        for (String cardId : cardIds) {
+            if (cardId == null || cardId.isBlank()) {
+                throw new RuntimeException("卡牌ID不能为空");
+            }
             var card = cardRepository.findById(cardId)
                 .orElseThrow(() -> new RuntimeException("卡牌不存在：" + cardId));
             if (!Boolean.TRUE.equals(card.getEnabled())) {
@@ -148,5 +171,12 @@ public class DeckService {
                 throw new RuntimeException(card.getName() + "最多放入3张");
             }
         }
+    }
+
+    private String requireName(String name) {
+        if (name == null || name.isBlank() || name.trim().length() > 100) {
+            throw new IllegalArgumentException("卡组名称不能为空且不能超过100个字符");
+        }
+        return name.trim();
     }
 }

@@ -1,73 +1,43 @@
-# 🎴 Sekai Duel · 夜曲决斗
+# memory-11 · Sekai Duel（夜曲决斗）游戏项目
 
-> **基于游戏王规则 + WebSocket 实时对战 + Godot 4 客户端的二次元卡牌游戏**
-> A Yu-Gi-Oh! rules card game with WebSocket real-time PvP and a Godot 4 client
+基于游戏王规则的二次元卡片决斗游戏，包含 **Java Web 后端** 与 **Godot 4 客户端** 两部分。
 
-[![Java](https://img.shields.io/badge/Java-17-orange)](https://www.oracle.com/java/)
-[![Spring Boot](https://img.shields.io/badge/Spring%20Boot-3.x-brightgreen)](https://spring.io/projects/spring-boot)
-[![WebSocket](https://img.shields.io/badge/WebSocket-PvP-blueviolet)](https://developer.mozilla.org/docs/Web/API/WebSockets_API)
-[![Spring Data JPA](https://img.shields.io/badge/Spring%20Data%20JPA-3.x-6DB33F)](https://spring.io/projects/spring-data-jpa)
-[![Godot 4](https://img.shields.io/badge/Godot-4.7-blue)](https://godotengine.org/)
-[![Yu-Gi-Oh](https://img.shields.io/badge/规则-游戏王-important)](https://en.wikipedia.org/wiki/Yu-Gi-Oh!_Trading_Card_Game)
-[![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
+## 项目组成
 
-An anime-style card duel game implementing **Yu-Gi-Oh! rules**, with a **Java Web backend** and a **Godot 4 client**, supporting **real-time PvP battles** over WebSocket.
-
-一款实现游戏王规则的二次元卡牌决斗游戏：**Java Web 后端 + Godot 4 客户端**，支持 **WebSocket 实时 PvP 对战**。
-
-<p align="center">
-  <img src="screenshots/demo.webp" alt="Demo" width="720"/>
-</p>
-
----
-
-## 🗂️ Project Structure / 项目组成
-
-### SekaiGame (Java Backend)
+### SekaiGame（Java 后端）
 
 - Spring Boot + WebSocket + Spring Data JPA + MySQL
-- Account system, collection system
-- PvP real-time battle WebSocket relay service (`/ws/pvp`)
-- Full Yu-Gi-Oh! rule engine: summon, spell/trap activation, battle phase, direct attacks, token summoning, effect resolution
-- 300+ cards with effects, rarities, starter packs, and a card pack system
+- 账号系统、收藏系统、PvP 实时对战中继服务
+- 采用游戏王（Yu-Gi-Oh!）规则
 
-### SekaiGameGodot (Godot 4 Client)
+### SekaiGameGodot（Godot 4 客户端）
 
-- Godot 4.7 native client
-- 368 valid cards imported
-- Deterministic shuffling, opening hands, drawing, turn switching
-- Monster summoning, spell activation, setting cards, battle & direct attacks
-- Core effect dispatch, basic AI turns
-- `/ws/pvp` message protocol
-- See `SekaiGameGodot/README.md`
+- Godot 4.7 原生客户端迁移版本
+- 导入 368 张有效卡牌
+- 确定性洗牌、起手手牌、抽卡与回合切换
+- 怪兽召唤、魔法发动、盖牌、战斗与直接攻击
+- 核心效果分发、基础 AI 回合、`/ws/pvp` 消息协议
+- 详见 `SekaiGameGodot/README.md`
 
-## ▶️ Quick Start / 快速开始
+## 运行
 
-### Backend / 后端
+### 后端
 
 ```powershell
 cd SekaiGame
-# 1. Create MySQL database & set env vars
-$env:MYSQL_PASSWORD = "your-db-password"   # same as in application.yml
-$env:JWT_SECRET = "your-jwt-secret"
-# 2. Run
 mvn spring-boot:run
 ```
 
-### Godot Client / Godot 客户端
+### Godot 客户端
 
-Open the `SekaiGameGodot` folder with Godot 4.7.1.
+使用 Godot 4.7.1 打开 `SekaiGameGodot` 目录即可。
 
-## 📝 Notes / 说明
+## 其他目录
 
-- **Card images are NOT included** due to copyright. The game data (stats, effects, rarities) is fully included — add your own card art under `SekaiGame/src/main/resources/static/assets/cards/` or replace with generated placeholders. 卡面素材因版权问题未包含，卡牌数据完整保留，请自行准备卡面图片。
-- MySQL database name: `sekai_friend`
-- Secrets are read from environment variables — never hardcode them.
+- `pricture/`、`analysis-contact-sheets/`、`audit-70-large/`：卡面图片与素材
+- `picture-inventory.json`：图片素材清单
+- `.tools/`、`.tmp-superpowers-*`：本地工具与临时文件
 
-## 📄 License
+## 说明
 
-[MIT](LICENSE) © 2026 [sekai-lyr](https://github.com/sekai-lyr)
-
----
-
-**⭐ If this project helped you, star it! 如果这个项目对你有帮助，欢迎 Star！**
+游戏采用游戏王规则实现，卡面素材为个人使用，正式发布前需替换版权素材。

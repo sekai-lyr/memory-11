@@ -1,4 +1,4 @@
-import { ALL_CARDS } from "./catalog.js?v=1.8.4";
+import { ALL_CARDS } from "./catalog.js?v=1.8.6-original";
 
 const RARITY_VALUE = { N: 1, R: 2, SR: 3, SSR: 4, UR: 5 };
 const THEMES = [

@@ -33,13 +33,17 @@ function getFallbackArt(card) {
 
 export function hydrateCardArt(card, selectedArtByCard = {}) {
     if (!card) return null;
-    if (card.series !== "nightcord" || card.id?.startsWith("gallery_")) return { ...card };
+    if (card.series !== "nightcord" || card.id?.startsWith("gallery_")) {
+        return { ...card };
+    }
 
     const selectedId = selectedArtByCard?.[card.id];
     const selected = selectedId ? getArtById(selectedId) : null;
     const art = selected || getDefaultArt(card.id) || getFallbackArt(card);
 
-    if (!art) return { ...card };
+    if (!art) {
+        return { ...card };
+    }
     return {
         ...card,
         image: art.image,

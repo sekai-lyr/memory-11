@@ -17,6 +17,8 @@ function mkTrap(o = {}) {
 function createGame() {
     const s = new GameState();
     s.players = [new Player("P1", Array.from({ length: 20 }, () => mk())), new Player("P2", Array.from({ length: 20 }, () => mk()))];
+    s.turn = 1;
+    s.phase = "battle";
     return { s, e: new GameEngine(s) };
 }
 
@@ -33,6 +35,19 @@ describe("开局", () => {
 
 describe("召唤", () => {
     it("每回合只能通常召唤一次", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.phase = "main_1"; const p = s.players[0]; p.hand = [mk(), mk()]; summon(e, p, 0); const r = summon(e, p, 0); assert.equal(r.success, false); });
+    it("追加通常召唤次数只能使用规定次数", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.phase = "main_1";
+        const p = s.players[0];
+        p.hand = [mk({ id: "extra_1" }), mk({ id: "extra_2" }), mk({ id: "extra_3" })];
+        p.additionalNormalSummon = 1;
+
+        assert.equal(summon(e, p, 0).success, true);
+        assert.equal(summon(e, p, 0).success, true);
+        assert.equal(p.additionalNormalSummon, 0);
+        assert.equal(summon(e, p, 0).success, false);
+    });
     it("5星需要1只祭品", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.phase = "main_1"; const p = s.players[0]; p.hand = [mk({ level: 3 }), mk({ level: 5 })]; summon(e, p, 0); p.normalSummonUsed = false; const r = summon(e, p, 0); assert.equal(r.needsTribute, true); assert.equal(r.tributeNeeded, 1); });
     it("7星需要2只祭品", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.phase = "main_1"; const p = s.players[0]; p.hand = [mk({ level: 3 }), mk({ level: 3 }), mk({ level: 7 })]; summon(e, p, 0); p.normalSummonUsed = false; summon(e, p, 0); p.normalSummonUsed = false; const r = summon(e, p, 0); assert.equal(r.needsTribute, true); assert.equal(r.tributeNeeded, 2); });
     it("取消祭品选择不改变状态", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.phase = "main_1"; const p = s.players[0]; p.hand = [mk({ level: 5 }), mk()]; summon(e, p, 0); p.normalSummonUsed = false; summon(e, p, 0); e.cancelTribute(); assert.equal(s.phase, "main_1"); assert.equal(s.pendingTribute, null); });
@@ -40,6 +55,131 @@ describe("召唤", () => {
 });
 
 describe("攻击", () => {
+    it("同一战斗阶段的多只怪兽可以分别攻击", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "battle";
+        const attackers = [1600, 1800].map(attack => {
+            const card = createCardInstance(mk({ attack }));
+            card.canAttack = true;
+            return card;
+        });
+        const defenders = [1000, 1200].map(attack => createCardInstance(mk({ attack, defense: 800 })));
+        const [firstTarget, secondTarget] = defenders;
+        s.players[0].monsterZone = attackers;
+        s.players[1].monsterZone = defenders;
+
+        assert.equal(e.attack(attackers[0], firstTarget).success, true);
+        assert.equal(e.attack(attackers[1], secondTarget).success, true);
+        assert.equal(s.players[0].monsterZone.length, 2);
+        assert.equal(s.players[1].monsterZone.length, 0);
+    });
+
+    it("攻击必须由当前玩家在战斗阶段发动", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "main_1";
+        const attacker = createCardInstance(mk({ attack: 2000 }));
+        attacker.canAttack = true;
+        s.players[0].monsterZone = [attacker];
+        assert.equal(e.attack(attacker, "player").success, false);
+
+        s.phase = "battle";
+        const opponentMonster = createCardInstance(mk({ attack: 2000 }));
+        opponentMonster.canAttack = true;
+        s.players[1].monsterZone = [opponentMonster];
+        assert.equal(e.attack(opponentMonster, "player").success, false);
+    });
+
+    it("双重攻击怪兽在同回合可以攻击两次", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "battle";
+        const attacker = createCardInstance(mk({ attack: 1200 }));
+        attacker.canAttack = true;
+        attacker.doubleAttackThisTurn = true;
+        s.players[0].monsterZone = [attacker];
+
+        assert.equal(e.attack(attacker, "player").success, true);
+        assert.equal(attacker.hasAttackedThisTurn, true);
+        assert.equal(attacker.canAttack, true);
+        assert.equal(e.attack(attacker, "player").success, true);
+        assert.equal(attacker.canAttack, false);
+        assert.equal(s.players[1].lp, 5600);
+    });
+
+    it("上回合守备怪兽变更为攻击表示后可攻击", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "main_1";
+        const attacker = createCardInstance(mk({ attack: 1200 }));
+        attacker.position = MONSTER_POSITION.DEFENSE;
+        attacker.canAttack = false;
+        s.players[0].monsterZone = [attacker];
+
+        assert.equal(e.changePosition(s.players[0], attacker).success, true);
+        s.phase = "battle";
+        assert.equal(attacker.position, MONSTER_POSITION.ATTACK);
+        assert.equal(attacker.canAttack, true);
+        assert.equal(e.attack(attacker, "player").success, true);
+    });
+
+    it("不能被攻击的怪兽不能作为战斗目标", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "battle";
+        const attacker = createCardInstance(mk({ attack: 2000 }));
+        attacker.canAttack = true;
+        const target = createCardInstance(mk({ attack: 1000 }));
+        target.cannotBeAttacked = true;
+        s.players[0].monsterZone = [attacker];
+        s.players[1].monsterZone = [target];
+
+        assert.equal(e.attack(attacker, target).success, false);
+        assert.equal(attacker.hasAttackedThisTurn, false);
+        assert.equal(s.players[1].monsterZone.length, 1);
+    });
+
+    it("效果破坏不能绕过效果破坏抗性", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.phase = "main_1";
+        const source = createCardInstance(mk({ effects: [{ trigger: "manual", type: "destroyTarget" }] }));
+        const target = createCardInstance(mk({ attack: 1000 }));
+        target.cannotBeDestroyedByEffect = true;
+        s.players[0].monsterZone = [source];
+        s.players[1].monsterZone = [target];
+
+        const result = e.triggerEffect(s.players[0], source, target);
+
+        assert.match(result, /不能被效果破坏/);
+        assert.equal(s.players[1].monsterZone.includes(target), true);
+    });
+
+    it("战斗破坏抗性不会错误吞掉战斗伤害", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.phase = "battle";
+        const attacker = createCardInstance(mk({ attack: 2200 }));
+        attacker.canAttack = true;
+        const target = createCardInstance(mk({ attack: 1000 }));
+        target.cannotBeDestroyedByBattle = true;
+        s.players[0].monsterZone = [attacker];
+        s.players[1].monsterZone = [target];
+
+        const result = e.attack(attacker, target);
+
+        assert.equal(result.success, true);
+        assert.equal(s.players[1].monsterZone.includes(target), true);
+        assert.equal(s.players[1].lp, 6800);
+    });
+
     it("ATK对ATK：高攻破坏低攻", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 2000, defense: 1000 })); atk.canAttack = true; const def = createCardInstance(mk({ attack: 1500, defense: 1000 })); s.players[0].monsterZone = [atk]; s.players[1].monsterZone = [def]; e.attack(atk, def); assert.equal(s.players[1].monsterZone.length, 0); assert.ok(s.players[1].lp < 8000); });
     it("ATK对ATK：相同则同归于尽", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 1500, defense: 1000 })); atk.canAttack = true; const def = createCardInstance(mk({ attack: 1500, defense: 1000 })); s.players[0].monsterZone = [atk]; s.players[1].monsterZone = [def]; e.attack(atk, def); assert.equal(s.players[0].monsterZone.length, 0); assert.equal(s.players[1].monsterZone.length, 0); });
     it("ATK对DEF：ATK>DEF则守备破坏", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 2000, defense: 1000 })); atk.canAttack = true; const def = createCardInstance(mk({ attack: 1000, defense: 1500 })); def.position = MONSTER_POSITION.DEFENSE; s.players[0].monsterZone = [atk]; s.players[1].monsterZone = [def]; e.attack(atk, def); assert.equal(s.players[1].monsterZone.length, 0); assert.equal(s.players[1].lp, 8000); });
@@ -49,6 +189,37 @@ describe("攻击", () => {
     it("守备表示怪兽不能攻击", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 1500 })); atk.position = MONSTER_POSITION.DEFENSE; atk.canAttack = true; s.players[0].monsterZone = [atk]; s.players[1].monsterZone = []; const r = e.attack(atk, "player"); assert.equal(r.success, false); });
     it("直接攻击扣除正确LP", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 2500 })); atk.canAttack = true; s.players[0].monsterZone = [atk]; s.players[1].monsterZone = []; e.attack(atk, "player"); assert.equal(s.players[1].lp, 5500); });
     it("每只怪兽每回合只能攻击一次", () => { const { s, e } = createGame(); s.currentPlayerIndex = 0; s.firstTurn = false; const atk = createCardInstance(mk({ attack: 1500 })); atk.canAttack = true; s.players[0].monsterZone = [atk]; s.players[1].monsterZone = [createCardInstance(mk({ attack: 1000, defense: 1000 }))]; e.attack(atk, s.players[1].monsterZone[0]); const r = e.attack(atk, s.players[1].monsterZone[0]); assert.equal(r.success, false); });
+    it("攻击无效的陷阱只限制本次攻击怪兽，不锁定同方其它怪兽", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        const attackers = [1500, 1200, 1000].map(attack => {
+            const card = createCardInstance(mk({ attack }));
+            card.canAttack = true;
+            return card;
+        });
+        const trap = createCardInstance(mkTrap({
+            effects: [{ trigger: "onAttacked", type: "cannotAttack", value: 0 }],
+        }));
+        trap.faceDown = true;
+        trap.canActivate = true;
+        s.players[0].monsterZone = attackers;
+        s.players[1].monsterZone = [];
+        s.players[1].spellTrapZone = [trap];
+
+        const canceled = e.attack(attackers[0], "player");
+
+        assert.equal(canceled.attackCanceled, true);
+        assert.equal(attackers[0].canAttack, false);
+        assert.equal(attackers[0].cannotAttack, true);
+        assert.equal(attackers[1].canAttack, true);
+        assert.equal(attackers[1].cannotAttack, false);
+        assert.equal(attackers[2].canAttack, true);
+        assert.equal(attackers[2].cannotAttack, false);
+        assert.equal(e.attack(attackers[1], "player").success, true);
+        assert.equal(e.attack(attackers[2], "player").success, true);
+        assert.equal(s.players[1].lp, 5800);
+    });
 });
 
 describe("魔法陷阱", () => {
@@ -79,10 +250,10 @@ describe("状态完整性", () => {
 });
 
 describe("卡牌数据", () => {
-    it("35张元素卡牌ID不重复", async () => { const { cardDatabase } = await import("../js/cards.js"); const ids = cardDatabase.map(c => c.id); assert.equal(new Set(ids).size, 35); });
-    it("每张卡牌都有稀有度", async () => { const { cardDatabase } = await import("../js/cards.js"); for (const c of cardDatabase) { assert.ok(c.rarity); assert.ok(["N", "R", "SR", "SSR"].includes(c.rarity)); } });
-    it("50张旧卡牌可以通过兼容层正常载入", async () => { const { cardDatabase } = await import("../js/cards.js"); for (const c of cardDatabase) { assert.ok(c.type === "monster" || c.type === "spell" || c.type === "trap"); if (c.type === "monster") { assert.ok(typeof c.attack === "number"); assert.ok(typeof c.defense === "number"); } } });
-    it("卡牌数据库校验可以发现重复ID", async () => { const { cardDatabase } = await import("../js/cards.js"); const ids = cardDatabase.map(c => c.id); const dupes = ids.filter((id, i) => ids.indexOf(id) !== i); assert.equal(dupes.length, 0); });
+    it("完整卡牌目录ID不重复", async () => { const { ALL_CARDS } = await import("../js/catalog.js"); const ids = ALL_CARDS.map(c => c.id); assert.equal(new Set(ids).size, ALL_CARDS.length); });
+    it("每张卡牌都有稀有度", async () => { const { ALL_CARDS } = await import("../js/catalog.js"); for (const c of ALL_CARDS) { assert.ok(c.rarity); assert.ok(["N", "R", "SR", "SSR", "UR"].includes(c.rarity)); } });
+    it("完整目录可以通过兼容层正常载入", async () => { const { ALL_CARDS } = await import("../js/catalog.js"); for (const c of ALL_CARDS) { assert.ok(c.type === "monster" || c.type === "spell" || c.type === "trap"); if (c.type === "monster") { assert.ok(typeof c.attack === "number"); assert.ok(typeof c.defense === "number"); } } });
+    it("卡牌目录校验可以发现重复ID", async () => { const { ALL_CARDS } = await import("../js/catalog.js"); const ids = ALL_CARDS.map(c => c.id); const dupes = ids.filter((id, i) => ids.indexOf(id) !== i); assert.equal(dupes.length, 0); });
 });
 
 // ==================== 新增测试：effects数组兼容 ====================
@@ -110,6 +281,51 @@ describe("effects数组兼容", () => {
 
 // ==================== 新增测试：事件系统 ====================
 describe("事件系统", () => {
+    it("特殊召唤会触发onSpecialSummon效果", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.turn = 4;
+        s.phase = "main_1";
+        const revived = createCardInstance(mk({
+            effects: [{ trigger: "onSpecialSummon", type: "drawCards", value: 1 }],
+        }));
+        const source = createCardInstance(mk({
+            effects: [{
+                trigger: "manual",
+                type: "specialSummonFromGraveyard",
+                target: { owner: "self", zone: "graveyard", selector: "lowestAttack", count: 1 },
+            }],
+        }));
+        s.players[0].monsterZone = [source];
+        s.players[0].graveyard = [revived];
+
+        const result = e.triggerEffect(s.players[0], source);
+
+        assert.match(result, /特殊召唤/);
+        assert.equal(s.players[0].monsterZone.includes(revived), true);
+        assert.equal(s.players[0].hand.length, 1);
+    });
+
+    it("祭品送墓不会错误触发onDestroyed", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.turn = 4;
+        s.phase = "main_1";
+        const tribute = createCardInstance(mk({ effects: [{ trigger: "onDestroyed", type: "drawCards", value: 1 }] }));
+        const highLevel = createCardInstance(mk({ level: 5 }));
+        s.players[0].monsterZone = [tribute];
+        s.players[0].hand = [highLevel];
+
+        assert.equal(e.normalSummon(s.players[0], 0).needsTribute, true);
+        e.selectTribute(tribute);
+        e.confirmTribute();
+
+        assert.equal(s.players[0].graveyard.includes(tribute), true);
+        assert.equal(s.players[0].hand.length, 0);
+    });
+
     it("emit记录事件日志", () => {
         const { s, e } = createGame();
         e.emit("testEvent", { data: 123 });
@@ -127,10 +343,139 @@ describe("事件系统", () => {
         summon(e, p, 0);
         assert.equal(eventFired, true);
     });
+
+    it("攻击宣言会触发盖放的onAttacked陷阱并正确减伤", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        const attacker = createCardInstance(mk({ attack: 2500 }));
+        attacker.canAttack = true;
+        const trap = createCardInstance(mkTrap({ effects: [{ trigger: "onAttacked", type: "reduceDamage", value: 2000 }] }));
+        trap.faceDown = true;
+        trap.canActivate = true;
+        s.players[0].monsterZone = [attacker];
+        s.players[1].monsterZone = [];
+        s.players[1].spellTrapZone = [trap];
+
+        const result = e.attack(attacker, "player");
+
+        assert.equal(result.success, true);
+        assert.equal(s.players[1].lp, 7500);
+        assert.equal(s.players[1].spellTrapZone.length, 0);
+        assert.equal(s.players[1].graveyard[0], trap);
+        assert.ok(s.eventLog.some(event => event.type === "onAttacked"));
+    });
+
+    it("onAttacked的破坏攻击者效果会取消攻击并送墓", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        const attacker = createCardInstance(mk({ attack: 2500 }));
+        attacker.canAttack = true;
+        const trap = createCardInstance(mkTrap({ effects: [{ trigger: "onAttacked", type: "destroyAttacker", value: 0 }] }));
+        trap.faceDown = true;
+        trap.canActivate = true;
+        s.players[0].monsterZone = [attacker];
+        s.players[1].spellTrapZone = [trap];
+
+        const result = e.attack(attacker, "player");
+
+        assert.equal(result.success, true);
+        assert.equal(result.attackCanceled, true);
+        assert.equal(s.players[0].monsterZone.includes(attacker), false);
+        assert.equal(s.players[0].graveyard.includes(attacker), true);
+        assert.equal(s.players[1].lp, 8000);
+    });
+
+    it("手动发动只执行manual效果，不误执行其它触发时机", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.phase = "main_1";
+        const card = createCardInstance(mk({ effects: [
+            { trigger: "manual", type: "healPlayer", value: 100 },
+            { trigger: "onSummon", type: "directDamage", value: 1000 },
+        ] }));
+        s.players[0].lp = 7000;
+        s.players[0].monsterZone = [card];
+
+        const result = e.triggerEffect(s.players[0], card);
+
+        assert.equal(result, "恢复100LP");
+        assert.equal(s.players[0].lp, 7100);
+        assert.equal(s.players[1].lp, 8000);
+    });
+
+    it("本回合攻击封锁在目标下个回合开始时解除", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.phase = "main_1";
+        s.firstTurn = false;
+        const source = createCardInstance(mk({ effects: [{
+            trigger: "manual",
+            type: "lockAttack",
+            target: { owner: "opponent", zone: "monster", selector: "highestAttack", count: 1 },
+        }] }));
+        const target = createCardInstance(mk({ attack: 2000 }));
+        target.canAttack = true;
+        s.players[0].monsterZone = [source];
+        s.players[1].monsterZone = [target];
+
+        e.triggerAllEffects(s.players[0], source, "manual");
+        assert.equal(target.canAttack, false);
+        assert.equal(target.attackLocked, false);
+
+        s.currentPlayerIndex = 1;
+        e.startTurn({ skipDraw: true });
+        assert.equal(target.canAttack, true);
+        assert.equal(target.cannotAttack, false);
+    });
+
+    it("怪兽被破坏时只触发自己的onDestroyed效果", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 1;
+        s.firstTurn = false;
+        const destroyed = createCardInstance(mk({ effects: [{ trigger: "onDestroyed", type: "drawCards", value: 1 }] }));
+        const attacker = createCardInstance(mk({ attack: 2500 }));
+        attacker.canAttack = true;
+        s.players[0].monsterZone = [destroyed];
+        s.players[1].monsterZone = [attacker];
+
+        e.attack(attacker, destroyed);
+
+        assert.equal(s.players[0].monsterZone.length, 0);
+        assert.equal(s.players[0].hand.length, 1);
+        assert.ok(s.eventLog.some(event => event.type === "onDestroyed" && event.data.destroyedCard === destroyed));
+    });
 });
 
 // ==================== 新增测试：临时效果和一回合一次 ====================
 describe("临时效果和限制", () => {
+    it("暂时除外的怪兽会在下个回合开始时返场", () => {
+        const { s, e } = createGame();
+        s.currentPlayerIndex = 0;
+        s.firstTurn = false;
+        s.turn = 4;
+        s.phase = "main_1";
+        const source = createCardInstance(mk({ effects: [{
+            trigger: "manual",
+            type: "temporaryBanish",
+            target: { owner: "opponent", zone: "monster", selector: "highestAttack", count: 1 },
+        }] }));
+        const target = createCardInstance(mk({ attack: 2200 }));
+        s.players[0].monsterZone = [source];
+        s.players[1].monsterZone = [target];
+
+        e.triggerEffect(s.players[0], source);
+        assert.equal(s.players[1].monsterZone.includes(target), false);
+        assert.equal(s.players[0]._tempBanished.length, 1);
+
+        e.endTurn();
+        e.startTurn({ skipDraw: true });
+
+        assert.equal(s.players[1].monsterZone.includes(target), true);
+        assert.equal(s.players[0]._tempBanished.length, 0);
+    });
+
     it("tempEffects在回合结束时清除untilEndTurn", () => {
         const { s, e } = createGame();
         const card = createCardInstance(mk());
@@ -227,26 +572,26 @@ describe("卡牌校验", () => {
 // ==================== 新增测试：数据库完整性 ====================
 describe("数据库完整性", () => {
     it("所有卡牌都有effects字段", async () => {
-        const { cardDatabase } = await import("../js/cards.js");
-        for (const c of cardDatabase) {
+        const { ALL_CARDS } = await import("../js/catalog.js");
+        for (const c of ALL_CARDS) {
             assert.ok(Array.isArray(c.effects) || c.effect !== undefined, `${c.id} 缺少effects字段`);
         }
     });
     it("所有卡牌都有lore字段", async () => {
-        const { cardDatabase } = await import("../js/cards.js");
-        for (const c of cardDatabase) {
+        const { ALL_CARDS } = await import("../js/catalog.js");
+        for (const c of ALL_CARDS) {
             assert.ok(typeof c.lore === "string", `${c.id} 缺少lore字段`);
         }
     });
     it("所有卡牌都有aiHints字段", async () => {
-        const { cardDatabase } = await import("../js/cards.js");
-        for (const c of cardDatabase) {
+        const { ALL_CARDS } = await import("../js/catalog.js");
+        for (const c of ALL_CARDS) {
             assert.ok(c.aiHints, `${c.id} 缺少aiHints字段`);
             assert.ok(c.aiHints.role, `${c.id} aiHints缺少role`);
         }
     });
-    it("卡牌数量为35", async () => {
-        const { cardDatabase } = await import("../js/cards.js");
-        assert.equal(cardDatabase.length, 35);
+    it("完整目录数量与产品目录一致", async () => {
+        const { ALL_CARDS } = await import("../js/catalog.js");
+        assert.equal(ALL_CARDS.length, 368);
     });
 });

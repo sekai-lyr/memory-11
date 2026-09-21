@@ -7,7 +7,7 @@ import { ELEMENT_ICONS, ELEMENT_NAMES, RACE_NAMES } from "./cards.js";
 import { ALL_CARDS } from "./catalog.js";
 import { PHASE, GAME_CONFIG, MONSTER_POSITION } from "./constants.js";
 import { addFoilShimmer } from "./effects.js";
-import { cardEffectFieldsHtml } from "./card-view.js?v=1.1.0";
+import { cardEffectFieldsHtml, cardRuleStatusHtml, cardVisualEffectHtml, cardVisualImageClass, cardVisualMotionStyle } from "./card-view.js?v=1.2.0-bca";
 
 function cardImageHTML(card, size) {
     const attr = card.attribute || card.element || "none";
@@ -29,8 +29,9 @@ function escapeAttr(value) {
 function getCardImageHTML(card, size = 120) {
     const img = card.thumbnail || card.image;
     const position = escapeAttr(card.objectPosition || "center");
-    if (img) return `<img src="${escapeAttr(img)}" alt="${escapeAttr(card.name)}" class="card-img" loading="eager" decoding="async" style="width:100%;height:100%;object-fit:cover;object-position:${position}"><div class="card-img-fallback" style="display:none;width:100%;height:100%">${cardImageHTML(card, size)}</div>`;
-    return `<div class="card-img-fallback" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">${cardImageHTML(card, size)}</div>`;
+    const effect = cardVisualEffectHtml(card);
+    if (img) return `<img src="${escapeAttr(img)}" alt="${escapeAttr(card.name)}" class="card-img ${cardVisualImageClass(card)}" loading="lazy" decoding="async" style="width:100%;height:100%;object-fit:cover;object-position:${position};${cardVisualMotionStyle(card)}"><div class="card-img-fallback" style="display:none;width:100%;height:100%">${cardImageHTML(card, size)}</div>${effect}`;
+    return `<div class="card-img-fallback" style="width:100%;height:100%;display:flex;align-items:center;justify-content:center">${cardImageHTML(card, size)}</div>${effect}`;
 }
 
 const PHASE_NAMES = { waiting: "等待", draw: "抽卡阶段", standby: "准备阶段", main_1: "主要阶段1", battle: "战斗阶段", main_2: "主要阶段2", end: "结束阶段", target_select: "选择目标", graveyard_select: "选择墓地", tribute_select: "选择祭品" };
@@ -390,7 +391,11 @@ export class GameUI {
                 addAction(`变为${newPos}`, "secondary-action", () => handlers.onChangePosition(card));
             }
             // 可发动的手动效果（一回合一次）
-            if (card.faceUp && card.effects?.some(e => e.trigger === "manual") && !card.oncePerTurnUsed) {
+            if (card.faceUp && card.rulesVersion) {
+                card.effects.forEach((effect, effectIndex) => {
+                    if (effect.trigger === "manual") addAction(effect.skillName, "primary-action", () => handlers.onActivateMonsterEffect(card, effectIndex));
+                });
+            } else if (card.faceUp && card.effects?.some(e => e.trigger === "manual") && !card.oncePerTurnUsed) {
                 addAction("发动效果", "primary-action", () => handlers.onActivateMonsterEffect(card));
             }
         }
@@ -683,9 +688,9 @@ export class GameUI {
                 const isFaceDown = !c.faceUp;
                 const isLocalOwner = ownerIdx === 0;
                 const canControl = isLocalOwner && currentPlayerIndex === 0;
-                const canAtk = canControl && isBattle && c.canAttack && !c.hasAttackedThisTurn && !isDef && c.faceUp;
+                const canAtk = canControl && isBattle && c.canAttack && !c.cannotAttack && !(c.themedState?.frozenUntil >= gs.turn) && !isDef && c.faceUp;
                 const isEnemy = ownerIdx === 1;
-                const isTargetable = isEnemy && currentPlayerIndex === 0 && isBattle && hasAttacker;
+                const isTargetable = isEnemy && currentPlayerIndex === 0 && isBattle && hasAttacker && !c.cannotBeAttacked;
                 const isEffectTarget = isTargetSelect && validTargets.some(t => t.instanceId === c.instanceId);
                 const isTributeTarget = isTributeSelect && canControl;
                 const slotAttr = c.attribute || c.element || "";
@@ -715,7 +720,7 @@ export class GameUI {
                     // 主要阶段：己方表侧怪兽显示「守备/攻击」切换按钮
                     const showPosBtn = canControl && !gs.gameOver
                         && (gs.phase === PHASE.MAIN_1 || gs.phase === PHASE.MAIN_2)
-                        && c.faceUp && !c.hasAttackedThisTurn && !c.positionChangedThisTurn;
+                        && c.faceUp && c.setTurn !== gs.turn && !(c.themedState?.frozenUntil >= gs.turn) && !c.hasAttackedThisTurn && !c.positionChangedThisTurn;
                     const posLabel = isDef ? "攻击" : "守备";
                     const posBtnHtml = showPosBtn
                         ? `<button class="pos-switch-btn" data-pos-switch="${escapeAttr(c.instanceId)}" onclick="event.stopPropagation()">${posLabel}</button>`
@@ -727,7 +732,7 @@ export class GameUI {
                                 <div class="card-art"><div class="card-art-inner">${getCardImageHTML(c, 80)}</div></div>
                                 <div class="card-footer"><span class="stat-atk"><span>ATK</span>${c.currentAttack}</span><span class="stat-def"><span>DEF</span>${c.currentDefense}</span></div>
                             </div>
-                            ${posBtnHtml}
+                            ${posBtnHtml}${cardRuleStatusHtml(c)}
                         </div>
                     </div>`;
                 }
@@ -748,7 +753,7 @@ export class GameUI {
                 const isEffectTarget = isTargetSelect && validTargets.some(target => target.instanceId === c.instanceId);
                 const targetAttr = isEffectTarget ? ` data-effect-target="${this._esc(c.instanceId)}"` : "";
                 html += `<div class="field-slot spell-trap-slot ${isFaceDown ? "face-down" : "has-card"} ${isEffectTarget ? "effect-target" : ""}" data-owner="${ownerIdx}" data-zone="spell-trap" data-stidx="${i}" data-instance-id="${escapeAttr(c.instanceId)}"${targetAttr}>
-                    ${isFaceDown ? `<div class="card-back-icon">${typeIcon}</div>` : `<div class="card mini-card type-${c.type} rarity-${c.rarity || "N"}"><div class="card-frame elem-${c.attribute || "none"}"><div class="card-header"><span class="card-name">${this._esc(c.name)}</span></div><div class="card-footer"><span class="stat-type">${c.type === "trap" ? "陷阱" : "魔法"}</span></div></div></div>`}
+                    ${isFaceDown ? `<div class="card-back-icon">${typeIcon}</div>` : `<div class="card mini-card type-${c.type} rarity-${c.rarity || "N"}"><div class="card-frame elem-${c.attribute || "none"}"><div class="card-header"><span class="card-name">${this._esc(c.name)}</span></div><div class="card-footer"><span class="stat-type">${c.type === "trap" ? "陷阱" : "魔法"}</span></div>${cardVisualEffectHtml(c)}</div></div>`}
                 </div>`;
             } else {
                 html += `<div class="field-slot empty spell-trap-slot" data-owner="${ownerIdx}" data-zone="spell-trap"></div>`;

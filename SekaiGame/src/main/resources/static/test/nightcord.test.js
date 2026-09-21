@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 global.document = { createElement: () => ({ textContent: "" }) };
 
 const { ANIME_CARDS } = await import("../js/nightcord-cards.js");
+const { NIGHTCORD_ONLY } = await import("../js/catalog.js");
 const { getUniqueNightcordMembers, hasResonance, GameEngine } = await import("../js/engine.js");
 const { GameState, Player, createCardInstance } = await import("../js/model.js");
 const { NIGHTCORD_STARTER_DECK } = await import("../js/decks.js");
@@ -28,23 +29,23 @@ function mkNightcord(o = {}) {
 
 // ==================== 卡池基础 ====================
 describe("二次元卡池基础", () => {
-    it("有15张卡（9张UR + 6张SSR魔法卡）", () => {
-        assert.equal(ANIME_CARDS.length, 15);
+    it("有23张卡（17张UR + 6张SSR卡）", () => {
+        assert.equal(ANIME_CARDS.length, 23);
     });
-    it("全部为魔法卡", () => {
+    it("卡池仅包含魔法卡和陷阱卡", () => {
         ANIME_CARDS.forEach(c => {
-            assert.equal(c.type, "spell", `${c.id} 不是魔法卡`);
+            assert.ok(["spell", "trap"].includes(c.type), `${c.id} 类型无效`);
         });
     });
     it("基础卡ID全部唯一", () => {
         const ids = ANIME_CARDS.map(c => c.id);
-        assert.equal(new Set(ids).size, 15);
+        assert.equal(new Set(ids).size, ANIME_CARDS.length);
     });
     it("稀有度总数正确", () => {
         const r = {};
         ANIME_CARDS.forEach(c => { r[c.rarity] = (r[c.rarity] || 0) + 1; });
         assert.equal(r.SSR, 6);
-        assert.equal(r.UR, 9);
+        assert.equal(r.UR, 17);
     });
     it("每张卡都有series", () => {
         ANIME_CARDS.forEach(c => {
@@ -255,7 +256,7 @@ describe("卡组规则", () => {
     });
     it("卡组中的卡牌都存在于卡池中", () => {
         NIGHTCORD_STARTER_DECK.main.forEach(id => {
-            const card = ANIME_CARDS.find(c => c.id === id);
+            const card = NIGHTCORD_ONLY.find(c => c.id === id);
             assert.ok(card, `卡组中的${id}不在卡池中`);
         });
     });

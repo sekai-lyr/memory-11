@@ -3,7 +3,9 @@
  * 支持卡组同步、随机种子分发、全动作类型中继
  * Spring Boot 整合版：使用同源 WebSocket 端点
  */
-const PVP_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/pvp`;
+const pvpHost = location.hostname || "127.0.0.1";
+const pvpPort = location.port === "8080" ? "8079" : location.port;
+const PVP_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${pvpHost}${pvpPort ? `:${pvpPort}` : ""}/ws/pvp`;
 
 export class PvPClient {
     constructor() {
@@ -34,7 +36,10 @@ export class PvPClient {
                     if (wasConnected) this.onError?.("联机连接已断开，请重新进入房间");
                 };
                 this.ws.onerror = (e) => { this.onError?.("连接失败"); reject(e); };
-                this.ws.onmessage = (e) => this._handleMessage(JSON.parse(e.data));
+                this.ws.onmessage = (e) => {
+                    try { this._handleMessage(JSON.parse(e.data)); }
+                    catch { this.onError?.("收到无效的联机消息"); }
+                };
             } catch (e) { reject(e); }
         });
     }

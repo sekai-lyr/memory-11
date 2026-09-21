@@ -43,6 +43,14 @@ function createScenario(cardDefinition, effect) {
 
     const card = createCardInstance({ ...cardDefinition, effects: [effect], effect: undefined });
     const engine = new GameEngine(state, () => 0.25);
+    if (effect.type === "themedAction") {
+        player.monsterZone[1].attribute = "fire";
+        player.graveyard.push(createCardInstance({ id: "audit_trap", name: "伏线", type: "trap", effects: [] }));
+        player.banished.push(createMonster("banished_material"));
+        card.themedState = { charges: 2 };
+        player.deck[0].attribute = card.attribute;
+        if (effect.action === "devour") player.monsterZone.push(createCardInstance({ id: "audit_token", name: "替身", type: "monster", level: 1, attack: 0, defense: 1000, isToken: true, effects: [] }));
+    }
     return { state, player, opponent, card, engine };
 }
 
@@ -60,8 +68,13 @@ function executeEffect(cardDefinition, effect) {
             throw new Error(result.message || "spell activation failed");
         }
     } else {
-        player.monsterZone.unshift(card);
-        engine.triggerAllEffects(player, card, effect.trigger || "manual");
+        if (effect.trigger === "onDestroyed") player.graveyard.push(card);
+        else player.monsterZone.unshift(card);
+        const context = effect.trigger === "onAttacked"
+            ? { attacker: state.opponentPlayer.monsterZone[0], attackerOwner: state.opponentPlayer, defenderOwner: player, battle: { canceled: false, reduction: 0 } }
+            : {};
+        const message = engine.triggerAllEffects(player, card, effect.trigger || "manual", context);
+        if (effect.type === "themedAction" && !message) throw new Error("positive fixture did not resolve themed action");
     }
 
     const integrityErrors = engine.checkStateIntegrity();

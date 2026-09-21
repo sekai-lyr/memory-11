@@ -12,9 +12,9 @@ test("自动生成卡牌使用直白描述且不再出现强度公式", () => {
     }
 });
 
-test("角色卡固定三项技能，其他自动生成卡最多两个效果", () => {
+test("技能数量按稀有度分配，最高三项", () => {
     for (const card of ALL_CARDS.filter(item => item.series !== "starter_ygo")) {
-        const expectedMaximum = card.type === "monster" && card.rarity !== "N" ? 3 : 2;
+        const expectedMaximum = { N: 1, R: 1, SR: 2, SSR: 3, UR: 3 }[card.rarity];
         assert.ok((card.effects || []).length <= expectedMaximum, `${card.name}效果数量超限`);
     }
 });

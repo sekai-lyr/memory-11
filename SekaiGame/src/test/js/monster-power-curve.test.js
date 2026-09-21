@@ -6,9 +6,12 @@ import { minimumMonsterStatTotal } from "../../main/resources/static/js/card-rul
 
 const monsters = ALL_CARDS.filter(card => card.type === "monster" && card.rarity !== "N");
 
-test("怪兽基础攻守符合稀有度与星级下限", () => {
+test("基础身材按星级与稀有度设上限，避免低星效果怪兽数值膨胀", () => {
     for (const card of monsters) {
-        assert.ok(card.attack + card.defense >= minimumMonsterStatTotal(card), `${card.name}的攻守低于${card.rarity} ${card.level}星下限`);
+        const rank = { R: 1, SR: 2, SSR: 3, UR: 4 }[card.rarity];
+        const cap = card.level <= 4 ? 1900 + rank * 50 : card.level <= 6 ? 2400 + rank * 50 : 2800 + rank * 100;
+        assert.ok(card.attack > 0 && card.attack <= cap, `${card.name}攻击力超出身材预算`);
+        assert.ok(card.defense >= 0 && card.defense <= cap + 200, `${card.name}守备力超出身材预算`);
     }
 });
 
@@ -31,7 +34,11 @@ test("低稀有低星怪兽不会越级取得高阶群体机制", () => {
 test("技能目标数量、代价和发动条件随决斗强度阶级变化", () => {
     for (const card of monsters) {
         for (const effect of card.effects) {
-            assert.equal(effect.skillPower, card.duelPowerTier, `${card.name}技能阶级未同步`);
+            assert.ok(effect.oncePerTurn && effect.hardOncePerTurn, `${card.name}缺少同名发动限制`);
+            if (effect.action === "burst" || effect.action === "timeStop") {
+                assert.ok(card.effects.some(e => e.action === "charge"), `${card.name}没有指示物来源`);
+            }
+            if (effect.action === "twin") assert.match(effect.description, /支付600LP/);
             if (effect.type === "destroySpellTrap") {
                 assert.equal(effect.value, card.duelPowerTier >= 5 ? 2 : 1, `${card.name}后场破坏数量错误`);
             }

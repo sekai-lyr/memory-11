@@ -136,6 +136,7 @@ export class GameController {
         this.ui.addLog(`=== 第${this.state.turn}回合 · ${player.name}的回合 ===`, "turn");
 
         if (openingTurn) {
+            this.ui.showDrawAnimation?.(null, this.state.currentPlayerIndex, "FIRST TURN · NO DRAW");
             this.ui.addLog("先攻首回合跳过抽卡阶段，并且不能攻击", "play");
         } else if (drawResult.deckOut) {
             this.ui.addLog(drawResult.message, "damage");
@@ -161,6 +162,10 @@ export class GameController {
             }
             this._lockForEffect(3800);
             await new Promise(resolve => {
+                if (typeof document === "undefined") {
+                    resolve();
+                    return;
+                }
                 raf(() => {
                     playDrawEffect();
                     const htmlFn = isOpponentDraw
@@ -288,7 +293,9 @@ export class GameController {
             return this.summonMonster(cardIndex, MONSTER_POSITION.DEFENSE, true);
         }
         // 先获取手牌元素位置
-        const handEl = document.querySelector(`[data-instance-id="${card?.instanceId}"]`);
+        const handEl = typeof document === "undefined"
+            ? null
+            : document.querySelector(`[data-instance-id="${card?.instanceId}"]`);
         const handRect = handEl ? handEl.getBoundingClientRect() : null;
         const result = this.engine.setCard(this.state.currentPlayer, cardIndex);
         // 陷阱卡盖放时，只显示"盖放了一张陷阱卡"，不暴露具体名称
@@ -303,6 +310,7 @@ export class GameController {
             return;
         }
         this.checkAndRefresh();
+        if (!result.success || typeof document === "undefined") return;
         if (result.success && card) {
             const isTrap = card.type === "trap";
             this._lockForEffect(800);
@@ -436,23 +444,23 @@ export class GameController {
         this.checkAndRefresh();
     }
 
-    activateMonsterEffect(card) {
+    activateMonsterEffect(card, effectIndex = null) {
         if (this.effectBusy) { this.ui.addLog("请等待特效播完", "damage"); return; }
         if (!this._isHumanAllowed() || this.state.gameOver) return;
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) {
             this.ui.addLog("只能在主要阶段发动效果", "damage");
             return;
         }
-        if (!card.faceUp || card.oncePerTurnUsed) {
+        if (!card.faceUp || (!card.rulesVersion && card.oncePerTurnUsed)) {
             this.ui.addLog("该效果本回合已使用过", "damage");
             return;
         }
-        const result = this.engine.triggerAllEffects(this.state.currentPlayer, card, "manual");
+        const result = this.engine.triggerAllEffects(this.state.currentPlayer, card, "manual", { effectIndex });
         if (result) {
-            card.oncePerTurnUsed = true;
+            if (!card.rulesVersion) card.oncePerTurnUsed = true;
             this.ui.addLog(`${card.name}发动效果：${result}`, "play", { card });
             const monsterIndex = this.state.currentPlayer.monsterZone.indexOf(card);
-            this._pvpSend({ type: "activateMonsterEffect", monsterIndex });
+            this._pvpSend({ type: "activateMonsterEffect", monsterIndex, effectIndex });
             // 播放怪兽效果特效
             const slots = document.querySelectorAll(`[data-owner="${this.state.currentPlayerIndex}"][data-zone="monster"]`);
             const slot = [...slots].find(s => s.dataset.instanceId === card.instanceId);
@@ -836,7 +844,7 @@ export class GameController {
             this.ui.addLog("主要阶段2之后不能重新进入战斗阶段", "damage");
             return;
         }
-        if (!card.canAttack || card.hasAttackedThisTurn || card.position === MONSTER_POSITION.DEFENSE) return;
+        if (!card.canAttack || card.position === MONSTER_POSITION.DEFENSE || card.cannotAttack) return;
         if (this.state.selectedAttacker?.instanceId === card.instanceId) {
             if (this.state.opponentPlayer.monsterZone.length === 0) this.attackPlayer();
             return;
@@ -891,6 +899,12 @@ export class GameController {
                 attackCanceled: result.attackCanceled === true,
             });
         }
+        if (result.replay) {
+            this.ui.addLog(result.message, "play");
+            this.state.selectedAttacker = attacker;
+            this.refresh();
+            return;
+        }
         // 攻击重定向（里间雨效果②）
         if (result.redirect) {
             this.ui.addLog(result.message, "play");
@@ -938,7 +952,10 @@ export class GameController {
             return;
         }
 
-        this._lockForEffect(1500);
+        if (typeof document === "undefined") {
+            this.checkAndRefresh();
+            return;
+        }
 
         // 检查被破坏怪兽的onDestroyed效果并播放特效
         const destroyedTargets = [];
@@ -971,13 +988,18 @@ export class GameController {
             const targetSurvived = this.state.players[targetOwner].monsterZone.some(c => c.instanceId === target.instanceId);
 
             if (targetSlotEl && !targetSurvived) {
-                this._lockForEffect(2600);
                 // 先播放攻击碰撞
                 playAttackAnimation(attackerSlotEl, targetSlotEl, attacker, attackerSurvived);
+                const targetSlotRect = targetSlotEl.getBoundingClientRect();
                 // 延迟播放破坏动画
                 setTimeout(() => {
                     const graveId = targetOwner === 0 ? "player-graveyard-pile" : "opponent-graveyard-pile";
-                    animateCinematicDestroy(targetSlotEl, target, c => this.ui.cardHTML(c), graveId).then(() => {
+                    animateCinematicDestroy(
+                        { getBoundingClientRect: () => targetSlotRect },
+                        target,
+                        c => this.ui.cardHTML(c),
+                        graveId,
+                    ).then(() => {
                         this.checkAndRefresh();
                         // 播放onDestroyed特效
                         for (const { card, owner } of destroyedTargets) {
@@ -991,6 +1013,9 @@ export class GameController {
                         }
                     });
                 }, 500);
+                // 战斗数据已经在引擎中结算完成；动画是视觉层，不能阻塞同一战斗阶段
+                // 的其它合法攻击。
+                this.checkAndRefresh();
                 return;
             }
         }
@@ -1076,7 +1101,6 @@ export class GameController {
         if (this.state.gameOver) return;
         this.turnEnding = this.mode === "pvp";
         this.state.phase = PHASE.END;
-        this.engine.emit("onTurnEnd", { player: this.state.currentPlayer });
         this.engine.endTurn();
         if (this.mode === "local") {
             this.ui.showHandoff(this.state.currentPlayer.name, () => this._beginTurn());
@@ -1133,6 +1157,9 @@ export class GameController {
         const serializeCard = card => card ? {
             id: card.id,
             instanceId: card.instanceId,
+            themedState: card.themedState || {},
+            isToken: !!card.isToken,
+            ...(card.isToken ? { name: card.name, type: card.type, attribute: card.attribute, level: card.level, attack: card.attack, defense: card.defense, effects: [] } : {}),
             currentAttack: card.currentAttack,
             currentDefense: card.currentDefense,
             position: card.position,
@@ -1141,6 +1168,8 @@ export class GameController {
             canAttack: card.canAttack,
             cannotAttack: card.cannotAttack,
             hasAttackedThisTurn: card.hasAttackedThisTurn,
+            attacksMadeThisTurn: card.attacksMadeThisTurn || 0,
+            doubleAttackThisTurn: !!card.doubleAttackThisTurn,
             positionChangedThisTurn: card.positionChangedThisTurn,
             oncePerTurnUsed: card.oncePerTurnUsed,
             setTurn: card.setTurn,
@@ -1148,13 +1177,17 @@ export class GameController {
             attackLocked: card.attackLocked,
             attackDisabledUntilEndPhase: card.attackDisabledUntilEndPhase,
             cannotBeTargeted: card.cannotBeTargeted,
+            cannotBeAttacked: card.cannotBeAttacked,
+            cannotBeDestroyedByBattle: card.cannotBeDestroyedByBattle,
+            cannotBeDestroyedByEffect: card.cannotBeDestroyedByEffect,
+            preventsBattleDamage: card.preventsBattleDamage,
             permanentBuffs: card.permanentBuffs || [],
             tempEffects: (card.tempEffects || []).map(serializeTempEffect).filter(Boolean),
         } : null;
         const serializePlayer = player => {
             const {
                 deck, hand, monsterZone, spellTrapZone, fieldZone,
-                graveyard, banished, extraDeck, oncePerTurnEffectsUsed,
+                graveyard, banished, extraDeck, oncePerTurnEffectsUsed, _tempBanished,
                 ...playerState
             } = player;
             return {
@@ -1168,6 +1201,11 @@ export class GameController {
                 banished: banished.map(serializeCard),
                 extraDeck: extraDeck.map(serializeCard),
                 oncePerTurnEffectsUsed: [...(oncePerTurnEffectsUsed || [])],
+                tempBanished: (_tempBanished || []).map(entry => ({
+                    returnTurn: entry.returnTurn,
+                    ownerIndex: entry.ownerIndex,
+                    card: serializeCard(entry.card),
+                })),
             };
         };
         return {
@@ -1194,6 +1232,12 @@ export class GameController {
             for (const [key, value] of Object.entries(source)) {
                 if (key === "oncePerTurnEffectsUsed") {
                     target.oncePerTurnEffectsUsed = new Set(value || []);
+                } else if (key === "tempBanished") {
+                    target._tempBanished = (value || []).map(entry => ({
+                        returnTurn: entry.returnTurn,
+                        ownerIndex: entry.ownerIndex,
+                        card: hydrateCard(entry.card),
+                    }));
                 } else if (["deck", "hand", "monsterZone", "spellTrapZone", "graveyard", "banished", "extraDeck"].includes(key)) {
                     target[key] = (value || []).map(hydrateCard);
                 } else if (key === "fieldZone") {
@@ -1383,7 +1427,7 @@ export class GameController {
             case "activateMonsterEffect": {
                 const monster = opponent.monsterZone[action.monsterIndex];
                 if (monster) {
-                    this.engine.triggerAllEffects(opponent, monster, "manual");
+                    this.engine.triggerAllEffects(opponent, monster, "manual", { effectIndex: action.effectIndex });
                 }
                 this.ui.addLog(`${opponent.name}发动了怪兽效果`, "play");
                 break;
@@ -1848,7 +1892,8 @@ export class GameController {
         const human = this.state.opponentPlayer;
         // 智能排序：先用弱怪试探（骗陷阱），再用强怪收割
         const attackers = ai.monsterZone
-            .filter(card => card.canAttack && !card.hasAttackedThisTurn && !card.cannotAttack && card.position === MONSTER_POSITION.ATTACK);
+            .filter(card => card.canAttack && card.faceUp && !card.cannotAttack
+                && !(card.themedState?.frozenUntil >= this.state.turn) && card.position === MONSTER_POSITION.ATTACK);
         // 如果对方有盖牌（可能有陷阱），先上弱怪；否则先上强怪
         const hasBackrow = human.spellTrapZone.some(c => c.faceDown);
         const attacker = hasBackrow
@@ -1867,6 +1912,7 @@ export class GameController {
         // 如果AI判断不该攻击（会亏怪），跳过这只怪兽
         if (target === null) {
             attacker.hasAttackedThisTurn = true;
+            attacker.canAttack = false;
             this.state.selectedAttacker = null;
             this._scheduleAi(() => this._runAiBattleStep(), this.aiActionDelay);
             return;
@@ -1884,6 +1930,12 @@ export class GameController {
         while (redirectDepth <= 3) {
             result = this.engine.attack(attacker, attackTarget);
             this.ui.addLog(result.message, "damage", result.trap ? { card: result.trapCard } : null);
+            if (result.replay) {
+                redirectDepth++;
+                attackTarget = human.monsterZone.length ? this._chooseAiAttackTarget(attacker, human.monsterZone) : "player";
+                if (attackTarget == null) break;
+                continue;
+            }
             if (result.redirect) {
                 redirectDepth++;
                 attackTarget = result.redirect;
@@ -1946,7 +1998,6 @@ export class GameController {
                 aiDestroyedTargets.push({ card: attacker, owner: 1 });
             }
 
-            this.checkAndRefresh();
             raf(() => {
 
                 // checkAndRefresh已重新渲染DOM，需要重新查询attackerSlot
@@ -2005,6 +2056,11 @@ export class GameController {
         if (ai !== this.state.players[1]) return null;
         const human = this.state.opponentPlayer;
         const skill = Number(this.aiProfile?.skill || 2);
+        const readyMonster = ai.monsterZone.find(card => card.setTurn !== this.state.turn
+            && !card.hasAttackedThisTurn && !card.positionChangedThisTurn
+            && !(card.themedState?.frozenUntil >= this.state.turn)
+            && card.position === MONSTER_POSITION.DEFENSE && !this.state.firstTurn);
+        if (readyMonster) return { kind: readyMonster.faceUp ? "position" : "flip", instanceId: readyMonster.instanceId };
         const cardValue = card => {
             const effects = card.effects || [];
             const priority = Number(card.aiHints?.priority || 0) * 120;
@@ -2032,10 +2088,12 @@ export class GameController {
             ));
             if (urgentSpell) return { kind: "spell", instanceId: urgentSpell.instanceId };
         }
-        if (!ai.normalSummonUsed && ai.monsterZone.length < GAME_CONFIG.MAX_MONSTER_ZONE) {
+        if (!ai.normalSummonUsed) {
             const candidates = ai.hand
                 .map(card => ({ card, needed: card?.type === "monster" ? this.engine.getTributeNeeded(card.level) : 99 }))
-                .filter(item => item.card?.type === "monster" && ai.monsterZone.length >= item.needed)
+                .filter(item => item.card?.type === "monster"
+                    && ai.monsterZone.filter(card => !card.cannotUseAsMaterial).length >= item.needed
+                    && (ai.monsterZone.length < GAME_CONFIG.MAX_MONSTER_ZONE || item.needed > 0))
                 .sort((a, b) => {
                     const aScore = cardValue(a.card) - a.needed * (skill >= 3 ? 650 : 500);
                     const bScore = cardValue(b.card) - b.needed * (skill >= 3 ? 650 : 500);
@@ -2053,6 +2111,10 @@ export class GameController {
 
     _executeAiPlayAction(action) {
         const ai = this.state.currentPlayer;
+        if (action.kind === "position" || action.kind === "flip") {
+            const card = ai.monsterZone.find(c => c.instanceId === action.instanceId);
+            return action.kind === "flip" ? this.engine.flipSummon(ai, card) : this.engine.changePosition(ai, card);
+        }
         const index = ai.hand.findIndex(card => card.instanceId === action.instanceId);
         if (index < 0) return { success: false, message: "要使用的卡牌已不在手牌" };
         const card = ai.hand[index];
@@ -2061,6 +2123,7 @@ export class GameController {
             if (result.needsTribute) {
                 const pending = this.state.pendingTribute;
                 [...ai.monsterZone]
+                    .filter(tribute => !tribute.cannotUseAsMaterial)
                     .sort((a, b) => (a.currentAttack || 0) - (b.currentAttack || 0))
                     .slice(0, pending?.needed || 0)
                     .forEach(tribute => this.engine.selectTribute(tribute));
@@ -2205,13 +2268,14 @@ export class GameController {
         const ai = this.state.currentPlayer;
         const card = ai.monsterZone
             .filter(monster => monster.faceUp
-                && !monster.oncePerTurnUsed
-                && monster.effects?.some(effect => effect.trigger === "manual"))
+                && (!monster.oncePerTurnUsed || monster.rulesVersion)
+                && monster.effects?.some(effect => effect.trigger === "manual"
+                    && (effect.type !== "themedAction" || this.engine.canActivateThemedEffect(ai, monster, effect))))
             .sort((a, b) => ((b.effects?.length || 0) * 300 + (b.currentAttack || 0))
                 - ((a.effects?.length || 0) * 300 + (a.currentAttack || 0)))[0];
         if (!card) return null;
         const message = this.engine.triggerAllEffects(ai, card, "manual");
-        if (message) card.oncePerTurnUsed = true;
+        if (message && !card.rulesVersion) card.oncePerTurnUsed = true;
         return message ? { card, message: `${card.name}发动效果：${message}` } : null;
     }
 
@@ -2262,7 +2326,7 @@ export class GameController {
         const ai = this.state.currentPlayer;
         const human = this.state.opponentPlayer;
         this.state.phase = PHASE.BATTLE;
-        for (const attacker of ai.monsterZone.filter(card => card.canAttack && !card.hasAttackedThisTurn && card.position === MONSTER_POSITION.ATTACK)) {
+        for (const attacker of ai.monsterZone.filter(card => card.canAttack && !card.cannotAttack && card.position === MONSTER_POSITION.ATTACK)) {
             if (this.state.gameOver) return;
             const target = human.monsterZone.length ? this._chooseAiAttackTarget(attacker, human.monsterZone) : "player";
             const result = this.engine.attack(attacker, target);
@@ -2314,7 +2378,7 @@ export class GameController {
             onSummon: (index, position, faceDown) => this.summonMonster(index, position, faceDown),
             onFlipSummon: card => this.flipSummon(card),
             onChangePosition: card => this.changePosition(card),
-            onActivateMonsterEffect: card => this.activateMonsterEffect(card),
+            onActivateMonsterEffect: (card, effectIndex) => this.activateMonsterEffect(card, effectIndex),
             onNextPhase: () => this.nextPhase(),
             onEndTurn: () => this.endTurn(),
             onSelectAttacker: card => this.selectAttacker(card),

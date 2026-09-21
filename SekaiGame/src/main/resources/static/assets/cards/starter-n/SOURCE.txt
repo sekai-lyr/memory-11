@@ -1,0 +1,3 @@
+Source: https://github.com/sparklinlabs/superpowers-asset-packs
+Commit: e8674a03ab4456802f71f848c4df79eccca23f7a
+License: CC0 1.0 Universal

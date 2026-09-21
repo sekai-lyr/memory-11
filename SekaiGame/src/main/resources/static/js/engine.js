@@ -6,6 +6,7 @@
 import { ELEMENT_STRONG } from "./cards.js";
 import { GAME_CONFIG, PHASE, MONSTER_POSITION, DURATION } from "./constants.js";
 import { createCardInstance } from "./model.js";
+import { themedEffectHandlers, canResolveThemedEffect, resolveThemedTurnEnd } from "./themed-effects.js";
 
 // ======================== Nightcord 共鸣系统 ========================
 const NIGHTCORD_MEMBERS = ["ena", "kanade", "mafuyu", "mizuki"];
@@ -27,30 +28,79 @@ export function hasResonance(player, requiredMembers = 2) {
 // ======================== 工具函数 ========================
 function safe(v) { const n = Number(v); return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 0; }
 
+function getEffectTrigger(effect) {
+    return effect?.trigger || effect?.event || "manual";
+}
+
 function canSpecialSummon(player) {
     return !player.cannotSpecialSummonThisTurn;
 }
 
-function destroyMonster(owner, monster, engine) {
+function getAttackLimit(monster) {
+    return monster.doubleAttackThisTurn || monster.attackTwiceThisTurn ? 2 : 1;
+}
+
+function markAttackUsed(monster) {
+    monster.attacksMadeThisTurn = (Number(monster.attacksMadeThisTurn) || 0) + 1;
+    monster.hasAttackedThisTurn = true;
+    monster.canAttack = monster.attacksMadeThisTurn < getAttackLimit(monster)
+        && !monster.cannotAttack
+        && monster.position === MONSTER_POSITION.ATTACK;
+}
+
+function destroyMonster(owner, monster, engine, cause = "effect") {
     const idx = owner.monsterZone.indexOf(monster);
-    if (idx === -1) return;
-    owner.monsterZone.splice(idx, 1);
-    const revivesToHand = monster.effects?.some(e => e.type === "reviveToHand" || e.type === "REVIVE_TO_HAND");
-    // 触发onDestroyed效果（如搜索卡组等）
-    if (engine && monster.effects?.some(e => e.trigger === "onDestroyed")) {
-        engine.triggerAllEffects(owner, monster, "onDestroyed");
+    if (idx === -1) return false;
+    const isDestruction = cause === "battle" || cause === "effect";
+    if (isDestruction && monster.themedState?.shelterUntil >= engine?.state.turn) {
+        delete monster.themedState.shelterUntil;
+        monster.position = MONSTER_POSITION.DEFENSE;
+        monster.canAttack = false;
+        return false;
     }
+    if (isDestruction && cause === "battle"
+        && (monster.cannotBeDestroyedByBattle || monster.destructionPreventedThisTurn)) return false;
+    if (isDestruction && cause === "effect" && monster.cannotBeDestroyedByEffect) return false;
+
+    owner.monsterZone.splice(idx, 1);
+    const revivesToHand = isDestruction
+        && monster.effects?.some(e => e.type === "reviveToHand" || e.type === "REVIVE_TO_HAND");
     if (revivesToHand) {
         resetCardState(monster);
         owner.hand.push(monster);
     } else {
         monster.canAttack = false;
         monster.hasAttackedThisTurn = true;
-        owner.graveyard.push(monster);
+        monster.attacksMadeThisTurn = getAttackLimit(monster);
+        if (!monster.isToken) owner.graveyard.push(monster);
+        monster.themedState = {};
     }
+
+    if (!engine) return true;
+    const event = {
+        sourceCard: monster,
+        sourcePlayer: owner,
+        destroyedCard: monster,
+        sentCard: monster,
+        cause,
+    };
+    if (!revivesToHand) {
+        engine.emit("onSentToGraveyard", event);
+        engine.triggerEvent("onSentToGraveyard", event);
+    }
+    if (isDestruction) {
+        engine.emit("onDestroyed", event);
+        engine.triggerEvent("onDestroyed", event);
+        if (cause === "battle") {
+            engine.emit("onDestroyByBattle", event);
+            engine.triggerEvent("onDestroyByBattle", event);
+        }
+    }
+    return true;
 }
 
 function resetCardState(card) {
+    card.themedState = {};
     card.currentAttack = card.attack || 0;
     card.currentDefense = card.defense || card.health || 0;
     card.currentHealth = card.defense || card.health || 0;
@@ -63,9 +113,17 @@ function resetCardState(card) {
     card.permanentBuffs = [];
     card.cannotAttack = false;
     card.cannotBeTargeted = false;
+    card.cannotBeAttacked = false;
     card.cannotBeDestroyedByBattle = false;
     card.cannotBeDestroyedByEffect = false;
+    card.preventsBattleDamage = false;
     card.attackLocked = false;
+    card.attacksMadeThisTurn = 0;
+    card.doubleAttackThisTurn = false;
+}
+
+function sendMonsterToGraveyard(owner, monster, engine, cause = "tribute") {
+    return destroyMonster(owner, monster, engine, cause);
 }
 
 // ======================== 统一事件分发 ========================
@@ -125,6 +183,8 @@ export function resolveTargets(engine, player, targetSpec) {
     // 选择方式
     const selector = targetSpec.selector || "all";
     const count = targetSpec.count || 1;
+    // selector=all 表示非指定对象的群体效果；其它选择器必须排除效果对象抗性。
+    if (selector !== "all") candidates = candidates.filter(card => !card.cannotBeTargeted);
 
     if (selector === "all") return candidates;
     if (selector === "random") { const shuffled = [...candidates].sort(() => engine._random() - 0.5); return shuffled.slice(0, count); }
@@ -135,6 +195,7 @@ export function resolveTargets(engine, player, targetSpec) {
 
 // ======================== 效果处理器映射 ========================
 const effectHandlers = {
+    ...themedEffectHandlers,
     signatureTechnique(ctx) {
         const protocol = ctx.effect?.protocol || {};
         const seed = Number(protocol.seed || 0) >>> 0;
@@ -173,7 +234,7 @@ const effectHandlers = {
         let destroyed = 0;
         for (const m of targets) {
             m.currentDefense = safe(m.currentDefense - ctx.value);
-            if (m.currentDefense <= 0) { destroyMonster(opp, m, ctx.engine); destroyed++; }
+            if (m.currentDefense <= 0 && destroyMonster(opp, m, ctx.engine)) destroyed++;
         }
         return `对对方全部怪兽造成${ctx.value}点伤害${destroyed ? `，${destroyed}只被破坏` : ""}`;
     },
@@ -219,18 +280,28 @@ const effectHandlers = {
         if (!target) return "没有可弱化的目标";
         target.currentDefense = Math.max(0, target.currentDefense - ctx.value);
         if (target.currentDefense <= 0) {
-            destroyMonster(ctx.opponent, target, ctx.engine);
-            return `${target.name}守备力下降${ctx.value}并被破坏`;
+            const destroyed = destroyMonster(ctx.opponent, target, ctx.engine);
+            return destroyed
+                ? `${target.name}守备力下降${ctx.value}并被破坏`
+                : `${target.name}守备力下降${ctx.value}，但不能被效果破坏`;
         }
         return `${target.name}守备力下降${ctx.value}`;
     },
     debuffAllEnemyAttack(ctx) { ctx.opponent.monsterZone.forEach(m => m.currentAttack = Math.max(0, m.currentAttack - ctx.value)); return `对方全部怪兽攻击力下降${ctx.value}`; },
     buffAllAlliesAttack(ctx) { ctx.player.monsterZone.forEach(m => m.currentAttack += ctx.value); return `己方全部怪兽攻击力上升${ctx.value}`; },
     directDamage(ctx) { ctx.opponent.takeDamage(ctx.value); return `对${ctx.opponent.name}造成${ctx.value}点伤害`; },
-    destroyAllEnemyMonsters(ctx) { const t = [...ctx.opponent.monsterZone]; t.forEach(m => destroyMonster(ctx.opponent, m, ctx.engine)); return `破坏了对方${t.length}只怪兽`; },
+    destroyAllEnemyMonsters(ctx) {
+        const t = [...ctx.opponent.monsterZone];
+        const destroyed = t.filter(m => destroyMonster(ctx.opponent, m, ctx.engine)).length;
+        return `破坏了对方${destroyed}只怪兽${destroyed < t.length ? `，${t.length - destroyed}只受到抗性保护` : ""}`;
+    },
     destroyTarget(ctx) {
         const target = ctx.target || ctx.opponent.monsterZone[0];
-        if (target && !target.isPlayer && target.currentDefense !== undefined) { destroyMonster(ctx.opponent, target, ctx.engine); return `破坏了${target.name}`; }
+        if (target && !target.isPlayer && target.currentDefense !== undefined) {
+            return destroyMonster(ctx.opponent, target, ctx.engine)
+                ? `破坏了${target.name}`
+                : `${target.name}不能被效果破坏`;
+        }
         return "没有可破坏的目标";
     },
     damageBothPlayers(ctx) { ctx.player.takeDamage(ctx.value); ctx.opponent.takeDamage(ctx.value); return `双方各受${ctx.value}点伤害`; },
@@ -242,7 +313,7 @@ const effectHandlers = {
             const real = before - target.currentDefense;
             ctx.player.heal(real);
             let msg = `对${target.name}造成${real}伤害，恢复${real}LP`;
-            if (target.currentDefense <= 0) { destroyMonster(ctx.opponent, target, ctx.engine); msg += "，怪兽被破坏"; }
+            if (target.currentDefense <= 0 && destroyMonster(ctx.opponent, target, ctx.engine)) msg += "，怪兽被破坏";
             return msg;
         }
         ctx.opponent.takeDamage(ctx.value); ctx.player.heal(ctx.value);
@@ -303,10 +374,27 @@ const effectHandlers = {
             ? `从对方墓地除外了${targets.length}张卡`
             : "对方墓地没有可除外的卡";
     },
-    reflectDamage(ctx) { return "镜面反射准备就绪"; },
+    reflectDamage(ctx) {
+        if (ctx.event === "onAttacked" && ctx.attacker) {
+            const reflected = Math.max(0, ctx.engine.getEffectiveAttack(ctx.attacker));
+            ctx.attackerOwner.takeDamage(reflected);
+            return `攻击无效并反弹${reflected}点伤害`;
+        }
+        return "镜面反射准备就绪";
+    },
     counterAndDamage(ctx) { return "火焰护盾准备就绪"; },
-    reduceDamage(ctx) { return "减伤屏障准备就绪"; },
-    destroyAttacker(ctx) { return "冰封牢笼准备就绪"; },
+    reduceDamage(ctx) {
+        return ctx.event === "onAttacked"
+            ? `本次战斗伤害减少${Math.max(0, Number(ctx.value) || 0)}`
+            : "减伤屏障准备就绪";
+    },
+    destroyAttacker(ctx) {
+        if (ctx.event === "onAttacked" && ctx.attacker) {
+            destroyMonster(ctx.attackerOwner, ctx.attacker, ctx.engine);
+            return `破坏了${ctx.attacker.name}`;
+        }
+        return "冰封牢笼准备就绪";
+    },
     lifesteal(ctx) { return "吸血准备就绪"; },
 
     // ---- 蓝絮猫女仆 凯伊效果 ----
@@ -546,7 +634,11 @@ const effectHandlers = {
         if (idx >= 0) {
             opp.monsterZone.splice(idx, 1);
             if (!ctx.player._tempBanished) ctx.player._tempBanished = [];
-            ctx.player._tempBanished.push({ card: target, returnTurn: ctx.engine.state.turn + 2 });
+            ctx.player._tempBanished.push({
+                card: target,
+                returnTurn: ctx.engine.state.turn + 1,
+                ownerIndex: ctx.engine.state.players.indexOf(opp),
+            });
             target.cannotAttack = true;
             return `${target.name}被暂时除外，回合结束时返还`;
         }
@@ -605,24 +697,51 @@ const effectHandlers = {
         target.setTurn = ctx.engine.state.turn;
         target.positionChangedThisTurn = false;
         ctx.player.monsterZone.push(target);
-        return `从墓地特殊召唤了${target.name}`;
+        const specialResult = ctx.engine._emitSpecialSummon(ctx.player, target, "graveyard");
+        return `从墓地特殊召唤了${target.name}${specialResult ? `，${specialResult}` : ""}`;
     },
     negateEffect(ctx) { return "效果无效化准备就绪"; },
     cannotAttack(ctx) {
+        if (ctx.event === "onAttacked" && ctx.attackerOwner) {
+            // 这类战斗陷阱的文本只限制“攻击怪兽”本身，不能把同一方
+            // 其它仍未攻击的怪兽一起锁死。
+            const attacker = ctx.attacker;
+            if (attacker && ctx.attackerOwner.monsterZone.includes(attacker)) {
+                attacker.cannotAttack = true;
+                attacker.canAttack = false;
+                return `${attacker.name}本回合不能再次攻击`;
+            }
+            return "本次攻击无效";
+        }
         const targets = ctx.targets || [];
-        targets.forEach(t => { t.cannotAttack = true; });
+        targets.forEach(t => {
+            t.cannotAttack = true;
+            t.canAttack = false;
+        });
         return targets.length > 0 ? `封锁了${targets.length}只怪兽的攻击` : "没有目标";
     },
     cannotBeAttacked(ctx) {
         const targets = ctx.targets || [];
+        targets.forEach(t => { t.cannotBeAttacked = true; });
+        return targets.length > 0 ? `${targets.length}只怪兽本回合不能被攻击` : "没有目标";
+    },
+    cannotBeDestroyedByBattle(ctx) {
+        const targets = ctx.targets || [];
         targets.forEach(t => { t.cannotBeDestroyedByBattle = true; });
         return targets.length > 0 ? `${targets.length}只怪兽本回合不会被战斗破坏` : "没有目标";
+    },
+    cannotBeDestroyedByEffect(ctx) {
+        const targets = ctx.targets || [];
+        targets.forEach(t => { t.cannotBeDestroyedByEffect = true; });
+        return targets.length > 0 ? `${targets.length}只怪兽本回合不会被效果破坏` : "没有目标";
     },
     changePosition(ctx) {
         const targets = ctx.targets || [];
         targets.forEach(t => {
             if (t.position === MONSTER_POSITION.ATTACK) t.position = MONSTER_POSITION.DEFENSE;
             else t.position = MONSTER_POSITION.ATTACK;
+            t.positionChangedThisTurn = true;
+            t.canAttack = false;
         });
         return targets.length > 0 ? `改变了${targets.length}只怪兽的表示形式` : "没有目标";
     },
@@ -636,6 +755,7 @@ const effectHandlers = {
             if (idx >= 0) {
                 opp.monsterZone.splice(idx, 1);
                 resetCardState(t);
+                if (t.isToken) { returned++; continue; }
                 if (opp.hand.length < GAME_CONFIG.MAX_HAND_SIZE) {
                     opp.hand.push(t);
                 } else {
@@ -686,7 +806,7 @@ const effectHandlers = {
     },
     preventDamage(ctx) {
         const targets = ctx.targets || [];
-        targets.forEach(t => { t.cannotBeDestroyedByBattle = true; });
+        targets.forEach(t => { t.preventsBattleDamage = true; });
         return targets.length > 0 ? `${targets.length}只怪兽本回合不受战斗伤害` : "没有目标";
     },
     tokenSummon(ctx) {
@@ -710,7 +830,13 @@ const effectHandlers = {
         token.setTurn = ctx.engine.state.turn;
         token.positionChangedThisTurn = false;
         ctx.player.monsterZone.push(token);
-        return `特殊召唤了衍生物 (ATK/${token.currentAttack} DEF/${token.currentDefense})`;
+        const specialResult = ctx.engine._emitSpecialSummon(ctx.player, token, "token");
+        return `特殊召唤了衍生物 (ATK/${token.currentAttack} DEF/${token.currentDefense})${specialResult ? `，${specialResult}` : ""}`;
+    },
+    additionalNormalSummon(ctx) {
+        const count = Math.max(1, Number(ctx.value) || 1);
+        ctx.player.additionalNormalSummon += count;
+        return `本回合追加${count}次通常召唤`;
     },
     gainAttackByCount(ctx) {
         const count = ctx.player.monsterZone.length;
@@ -1215,7 +1341,7 @@ const effectHandlers = {
         return "交换了双方的手牌";
     },
 
-    // 封锁对方怪兽攻击（永久，直到被祭品/破坏解除）
+    // 封锁对方怪兽攻击（本回合）
     lockAttack(ctx) {
         const count = ctx.value || 2;
         const opp = ctx.opponent;
@@ -1227,11 +1353,10 @@ const effectHandlers = {
         targets = targets.filter(m => !m.attackLocked);
         if (targets.length === 0) return "没有可封锁的怪兽";
         for (const t of targets) {
-            t.attackLocked = true;
             t.cannotAttack = true;
             t.canAttack = false;
         }
-        return `封锁了${targets.length}只怪兽的攻击能力（${targets.map(t => t.name).join("、")}），永久生效`;
+        return `封锁了${targets.length}只怪兽本回合的攻击（${targets.map(t => t.name).join("、")}）`;
     },
 
     // 场地魔法：水属性怪兽ATK/DEF+value，对方变守备需丢1手牌
@@ -1278,6 +1403,7 @@ const effectHandlers = {
 
     // 复活墓地中最后进入的怪兽（旧版兼容）
     reviveRecentGraveyard(ctx) {
+        if (!canSpecialSummon(ctx.player)) return "当回合不能特殊召唤";
         let targetIndex = -1;
         for (let index = ctx.player.graveyard.length - 1; index >= 0; index--) {
             if (ctx.player.graveyard[index]?.type === "monster") {
@@ -1294,7 +1420,8 @@ const effectHandlers = {
         target.positionChangedThisTurn = false;
         if (ctx.player.monsterZone.length < 5) {
             ctx.player.monsterZone.push(target);
-            return `复活了${target.name}到场上`;
+            const specialResult = ctx.engine._emitSpecialSummon(ctx.player, target, "graveyard");
+            return `复活了${target.name}到场上${specialResult ? `，${specialResult}` : ""}`;
         }
         ctx.player.hand.push(target);
         return `复活了${target.name}到手牌（场上已满）`;
@@ -1321,7 +1448,8 @@ const effectHandlers = {
         if (ctx.player.monsterZone.length < 5) {
             ctx.player.monsterZone.push(target);
             ctx.engine._lastRevivedCard = target;
-            return `从墓地特殊召唤了${target.name}（当回合不能攻击/作为素材）`;
+            const specialResult = ctx.engine._emitSpecialSummon(ctx.player, target, "graveyard");
+            return `从墓地特殊召唤了${target.name}（当回合不能攻击/作为素材）${specialResult ? `，${specialResult}` : ""}`;
         }
         ctx.player.hand.push(target);
         return `从墓地特殊召唤了${target.name}到手牌（场上已满）`;
@@ -1400,6 +1528,9 @@ const effectHandlers = {
         targets[0].doubleAttackThisTurn = true;
         return `${targets[0]?.name || "怪兽"}本回合可以攻击两次`;
     },
+    attackTwice(ctx) {
+        return effectHandlers.doubleAttack(ctx);
+    },
 
     // 支付LP破坏怪兽
     sacrificeDestroy(ctx) {
@@ -1458,7 +1589,7 @@ const effectHandlers = {
         const hasSpellSubstitute = fieldMonsters.some(c => c.fusionSubstituteSpell) || handMonsters.some(c => c.fusionSubstituteSpell);
 
         // 如果有融合替代效果，可以用1张魔法卡代替1只怪兽
-        const availableMonsters = [...fieldMonsters, ...handMonsters];
+        const availableMonsters = [...fieldMonsters, ...handMonsters].filter(m => !m.cannotUseAsMaterial);
         if (hasSpellSubstitute && handSpells.length > 0) {
             // 需要至少1只怪兽 + 1张魔法卡
             if (availableMonsters.length < 1) return "没有怪兽可用于融合";
@@ -1467,7 +1598,7 @@ const effectHandlers = {
         }
 
         // 从场上选第一只怪兽
-        const fuse1 = fieldMonsters[0] || handMonsters[0];
+        const fuse1 = availableMonsters[0];
         let fuse2;
 
         if (hasSpellSubstitute && handSpells.length > 0 && availableMonsters.length < 2) {
@@ -1476,7 +1607,7 @@ const effectHandlers = {
             fuse2._usedAsFusionSubstitute = true;
         } else {
             // 正常融合：第二只怪兽
-            fuse2 = (fieldMonsters[1] || fieldMonsters[0] !== fuse1 ? fieldMonsters.find(m => m !== fuse1) : null) || handMonsters[0];
+            fuse2 = availableMonsters.find(m => m !== fuse1);
         }
 
         if (fuse1) {
@@ -1512,7 +1643,7 @@ const effectHandlers = {
         const lv2 = fuse2?.type === "monster" ? (fuse2?.level || 1) : 1;
         const fusedLevel = Math.min(12, lv1 + lv2);
 
-        const fusionMonster = {
+        const fusionMonster = createCardInstance({
             id: "fusion_" + Date.now(),
             name: `${fuse1?.name || "?"} & ${fuse2?.name || "?"}`,
             type: "monster",
@@ -1521,20 +1652,21 @@ const effectHandlers = {
             level: fusedLevel,
             attack: Math.floor(fusedAtk),
             defense: Math.floor(fusedDef),
-            currentAttack: Math.floor(fusedAtk),
-            currentDefense: Math.floor(fusedDef),
             rarity: "UR",
             effects: [],
-            faceUp: true,
-            position: "attack",
-            canAttack: !ctx.engine.state.firstTurn,
-            hasAttackedThisTurn: false,
-            setTurn: ctx.engine.state.turn,
-        };
+        });
+        fusionMonster.currentAttack = Math.floor(fusedAtk);
+        fusionMonster.currentDefense = Math.floor(fusedDef);
+        fusionMonster.currentHealth = fusionMonster.currentDefense;
+        fusionMonster.faceUp = true;
+        fusionMonster.position = MONSTER_POSITION.ATTACK;
+        fusionMonster.canAttack = !ctx.engine.state.firstTurn && !ctx.player.skipBattlePhase;
+        fusionMonster.setTurn = ctx.engine.state.turn;
 
         ctx.player.monsterZone.push(fusionMonster);
+        const specialResult = ctx.engine._emitSpecialSummon(ctx.player, fusionMonster, "fusion");
         const substituteMsg = fuse2?._usedAsFusionSubstitute ? "（魔法卡作为融合素材）" : "";
-        return `融合召唤了${fusionMonster.name}${substituteMsg} (ATK/${fusionMonster.attack} DEF/${fusionMonster.defense})`;
+        return `融合召唤了${fusionMonster.name}${substituteMsg} (ATK/${fusionMonster.attack} DEF/${fusionMonster.defense})${specialResult ? `，${specialResult}` : ""}`;
     },
 };
 
@@ -1568,6 +1700,39 @@ export class GameEngine {
         this.eventBus.emit(eventType, { ...data, engine: this, gameState: this.state });
     }
 
+    /**
+     * 将游戏事件交给卡牌效果层。emit 只负责日志和外部监听器，
+     * 这样同一个事件不会因为 UI 监听而被重复结算。
+     */
+    triggerEvent(eventType, data = {}) {
+        if (eventType === "onTurnStart" || eventType === "onTurnEnd") {
+            const player = data.player;
+            if (!player) return null;
+            const sources = [...player.monsterZone.filter(card => card.faceUp), ...(player.fieldZone ? [player.fieldZone] : [])];
+            const messages = sources
+                .map(card => this.triggerAllEffects(player, card, eventType, data))
+                .filter(Boolean);
+            return messages.join("，") || null;
+        }
+
+        const sourceCard = data.sourceCard || data.summonedCard || data.destroyedCard;
+        const sourcePlayer = data.sourcePlayer || data.owner;
+        if (!sourceCard || !sourcePlayer) return null;
+        return this.triggerAllEffects(sourcePlayer, sourceCard, eventType, data);
+    }
+
+    _emitSpecialSummon(player, card, reason = "effect") {
+        const event = {
+            sourceCard: card,
+            sourcePlayer: player,
+            summonedCard: card,
+            specialSummon: true,
+            reason,
+        };
+        this.emit("onSpecialSummon", event);
+        return this.triggerEvent("onSpecialSummon", event);
+    }
+
     // ---------- 元素克制 ----------
     getElementBonus() {
         // 游戏王式战斗不使用属性克制倍率，属性仅用于卡牌效果与构筑。
@@ -1577,6 +1742,7 @@ export class GameEngine {
     // ---------- 回合流程 ----------
     startTurn({ skipDraw = false } = {}) {
         this.state.turn++;
+        this._restoreTemporaryBanishments();
         const player = this.state.currentPlayer;
         // 朝比奈真冬效果：回合开始时清除本方怪兽的 attackDisabledUntilEndPhase
         player.monsterZone.forEach(c => {
@@ -1604,8 +1770,38 @@ export class GameEngine {
         }
         this.state.phase = PHASE.DRAW;
         this.emit("onTurnStart", { player });
+        this.triggerEvent("onTurnStart", { player });
         if (skipDraw) return { success: true, skipped: true, message: "先攻首回合跳过抽卡" };
         return this.drawCard(player);
+    }
+
+    _restoreTemporaryBanishments() {
+        for (const holder of this.state.players) {
+            const pending = holder._tempBanished || [];
+            const remaining = [];
+            for (const entry of pending) {
+                if ((entry.returnTurn || Infinity) > this.state.turn) {
+                    remaining.push(entry);
+                    continue;
+                }
+                const owner = this.state.players[entry.ownerIndex];
+                const card = entry.card;
+                if (!owner || !card || owner.monsterZone.length >= GAME_CONFIG.MAX_MONSTER_ZONE) {
+                    remaining.push(entry);
+                    continue;
+                }
+                resetCardState(card);
+                card.faceUp = true;
+                card.faceDown = false;
+                card.position = MONSTER_POSITION.ATTACK;
+                card.setTurn = this.state.turn;
+                card.canAttack = owner === this.state.currentPlayer
+                    && !this.state.firstTurn
+                    && !owner.skipBattlePhase;
+                owner.monsterZone.push(card);
+            }
+            holder._tempBanished = remaining;
+        }
     }
 
     advancePhase() {
@@ -1618,6 +1814,22 @@ export class GameEngine {
     }
 
     endTurn() {
+        if (this.state.gameOver) return;
+        this.state.phase = PHASE.END;
+        const player = this.state.currentPlayer;
+        this.emit("onTurnEnd", { player });
+        this.triggerEvent("onTurnEnd", { player });
+        resolveThemedTurnEnd(this);
+        for (const owner of this.state.players) {
+            for (const card of owner.monsterZone) {
+                card.tempEffects = (card.tempEffects || []).filter(effect => effect.duration !== DURATION.UNTIL_END_TURN);
+                owner._recalcCardStats(card);
+                card.doubleAttackThisTurn = false;
+            }
+        }
+        this.discardToEndLimit(player);
+        if (this.checkGameOver()) return;
+        this.state.pendingBattleReplay = null;
         this.state.selectedAttacker = null;
         this.state.pendingAction = null;
         this.state.validTargets = [];
@@ -1630,6 +1842,19 @@ export class GameEngine {
 
     drawCard(player) { return player.drawCard(); }
 
+    resetFieldCard(card) { resetCardState(card); }
+    destroyFieldMonster(owner, card) { return destroyMonster(owner, card, this); }
+    _themedContext(player, card, effect, eventContext = {}) {
+        return { ...eventContext, player, card, effect, engine: this, gameState: this.state,
+            opponent: this.state.players.find(owner => owner !== player) };
+    }
+    canActivateThemedEffect(player, card, effect, eventContext = {}) {
+        const index = card.effects.indexOf(effect);
+        if (player.themedUses?.[`${card.id}:${index}`] === this.state.turn) return false;
+        if (card.themedState?.sealedUntil >= this.state.turn) return false;
+        return canResolveThemedEffect(this._themedContext(player, card, effect, eventContext));
+    }
+
     // ---------- 通常召唤/盖放 ----------
     getTributeNeeded(level) {
         if (level >= 7) return 2;
@@ -1639,20 +1864,27 @@ export class GameEngine {
 
     normalSummon(player, cardIndex, position = "attack", faceDown = false) {
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
-        const summonedThisTurn = player.normalSummonTurn === this.state.turn;
+        if (player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合召唤" };
+        // normalSummonUsed is the authoritative turn flag. Keeping the
+        // check independent from normalSummonTurn also preserves the
+        // explicit reset used by effects and controller integrations.
+        const summonedThisTurn = player.normalSummonUsed;
         if (summonedThisTurn && player.additionalNormalSummon <= 0) return { success: false, message: "本回合已进行过通常召唤" };
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) return { success: false, message: "只能在主要阶段召唤" };
 
         const card = player.hand[cardIndex];
         if (!card) return { success: false, message: "卡牌不存在" };
         if (card.type !== "monster") return { success: false, message: "只能召唤怪兽卡" };
-        if (player.monsterZone.length >= GAME_CONFIG.MAX_MONSTER_ZONE) return { success: false, message: "怪兽区已满" };
+        if (!faceDown && position !== MONSTER_POSITION.ATTACK) {
+            return { success: false, message: "通常召唤只能为攻击表示，守备表示请盖放" };
+        }
+        if (player.monsterZone.length >= GAME_CONFIG.MAX_MONSTER_ZONE && this.getTributeNeeded(card.level) === 0) return { success: false, message: "怪兽区已满" };
 
         const needed = this.getTributeNeeded(card.level);
         if (player.monsterZone.length < needed) return { success: false, message: `需要${needed}只祭品，场上只有${player.monsterZone.length}只` };
 
         if (needed > 0) {
-            this.state.pendingTribute = { player, cardIndex, card, needed, selected: [] };
+            this.state.pendingTribute = { player, cardIndex, card, needed, selected: [], previousPhase: this.state.phase, setFaceDown: faceDown };
             this.state.phase = PHASE.TRIBUTE_SELECT;
             this.state.tributeNeeded = needed;
             this.state.tributeSelected = [];
@@ -1665,6 +1897,7 @@ export class GameEngine {
     selectTribute(card) {
         const pt = this.state.pendingTribute;
         if (!pt) return { success: false, message: "没有待处理的祭品选择" };
+        if (!pt.player.monsterZone.includes(card)) return { success: false, message: "只能选择己方场上的怪兽作为祭品" };
         if (card.cannotUseAsMaterial) return { success: false, message: `${card.name}不能用作召唤素材` };
         if (pt.selected.includes(card)) {
             pt.selected = pt.selected.filter(c => c !== card);
@@ -1678,17 +1911,19 @@ export class GameEngine {
     confirmTribute(position = "attack", faceDown = false) {
         const pt = this.state.pendingTribute;
         if (!pt) return { success: false, message: "没有待处理的祭品选择" };
+        if (pt.player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合确认祭品" };
         if (pt.selected.length !== pt.needed) return { success: false, message: `还需要选择${pt.needed - pt.selected.length}只祭品` };
-        for (const tribute of pt.selected) { destroyMonster(pt.player, tribute, this); }
+        if (pt.selected.some(card => !pt.player.monsterZone.includes(card) || card.cannotUseAsMaterial) || !pt.player.hand.includes(pt.card)) return { success: false, message: "祭品或召唤卡已经不在原区域" };
+        for (const tribute of pt.selected) { sendMonsterToGraveyard(pt.player, tribute, this, "tribute"); }
         const wasSetFaceDown = pt.setFaceDown;
         this.state.pendingTribute = null;
-        this.state.phase = PHASE.MAIN_1;
-        return this._executeSummon(pt.player, pt.cardIndex, wasSetFaceDown ? MONSTER_POSITION.DEFENSE : position, wasSetFaceDown || faceDown);
+        this.state.phase = pt.previousPhase || PHASE.MAIN_1;
+        return this._executeSummon(pt.player, pt.player.hand.indexOf(pt.card), wasSetFaceDown ? MONSTER_POSITION.DEFENSE : position, wasSetFaceDown || faceDown);
     }
 
     cancelTribute() {
+        this.state.phase = this.state.pendingTribute?.previousPhase || PHASE.MAIN_1;
         this.state.pendingTribute = null;
-        this.state.phase = PHASE.MAIN_1;
         this.state.tributeNeeded = 0;
         this.state.tributeSelected = [];
     }
@@ -1696,6 +1931,9 @@ export class GameEngine {
     _executeSummon(player, cardIndex, position, faceDown) {
         const card = player.hand[cardIndex];
         player.hand.splice(cardIndex, 1);
+        if (player.normalSummonUsed && player.additionalNormalSummon > 0) {
+            player.additionalNormalSummon--;
+        }
         card.position = faceDown ? MONSTER_POSITION.DEFENSE : position;
         card.faceUp = !faceDown;
         // 游戏王中通常召唤没有召唤疲劳：除先攻首回合或卡牌限制外，
@@ -1708,10 +1946,11 @@ export class GameEngine {
         player.normalSummonTurn = this.state.turn;
 
         let msg = faceDown ? `盖放了${card.name}` : `通常召唤了${card.name}`;
-        this.emit("onSummon", { sourceCard: card, sourcePlayer: player, summonedCard: card });
+        const summonEvent = { sourceCard: card, sourcePlayer: player, summonedCard: card };
+        this.emit("onSummon", summonEvent);
 
         if (!faceDown) {
-            const effResult = this.triggerAllEffects(player, card, "onSummon");
+            const effResult = this.triggerEvent("onSummon", summonEvent);
             if (effResult) msg += `，${effResult}`;
         }
         return { success: true, message: msg, card };
@@ -1721,6 +1960,7 @@ export class GameEngine {
     activateSpell(player, cardIndex, selectedTarget = null) {
         this._lastRevivedCard = null;
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
+        if (player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合发动魔法" };
         const card = player.hand[cardIndex];
         if (!card || card.type !== "spell") return { success: false, message: "不是魔法卡" };
         if (card.cannotActivateThisTurn) return { success: false, message: `${card.name}本回合不能发动` };
@@ -1728,6 +1968,7 @@ export class GameEngine {
         const resolvingSelection = selectedTarget && (this.state.phase === PHASE.TARGET_SELECT || this.state.phase === PHASE.GRAVEYARD_SELECT);
         if (!inMainPhase && !resolvingSelection) return { success: false, message: "只能在主要阶段发动魔法" };
 
+        if (card.rulesVersion && !this.canPlayEffect(player, card).canPlay) return { success: false, message: "条件、资源不足或同名效果本回合已使用" };
         const primaryEffect = card.effect || card.effects?.[0];
         const targetType = this.getEffectTargetType(primaryEffect);
         const requiresTarget = !["none", "enemy_player", "self_player", "both_players"].includes(targetType);
@@ -1763,7 +2004,7 @@ export class GameEngine {
             }
             player.fieldZone = card;
             card.faceDown = false;
-            const result = this.triggerAllEffects(player, card, "manual");
+            const result = this.triggerAllEffects(player, card, "field");
             return { success: true, message: `发动了场地魔法${card.name}${result ? "，" + result : ""}`, card, isFieldSpell: true };
         }
 
@@ -1809,6 +2050,7 @@ export class GameEngine {
     // ---------- 盖放 ----------
     setCard(player, cardIndex) {
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
+        if (player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合盖放卡牌" };
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) return { success: false, message: "只能在主要阶段盖放卡牌" };
         const card = player.hand[cardIndex];
         if (!card) return { success: false, message: "卡牌不存在" };
@@ -1825,15 +2067,15 @@ export class GameEngine {
 
         // 里侧守备盖放怪兽
         if (card.type === "monster") {
-            if (player.monsterZone.length >= GAME_CONFIG.MAX_MONSTER_ZONE) return { success: false, message: "怪兽区已满" };
-            const summonedThisTurn = player.normalSummonTurn === this.state.turn;
+            if (player.monsterZone.length >= GAME_CONFIG.MAX_MONSTER_ZONE && this.getTributeNeeded(card.level) === 0) return { success: false, message: "怪兽区已满" };
+            const summonedThisTurn = player.normalSummonUsed;
             if (summonedThisTurn && player.additionalNormalSummon <= 0) return { success: false, message: "本回合已进行过通常召唤" };
 
             const needed = this.getTributeNeeded(card.level);
             if (player.monsterZone.length < needed) return { success: false, message: `需要${needed}只祭品，场上只有${player.monsterZone.length}只` };
 
             if (needed > 0) {
-                this.state.pendingTribute = { player, cardIndex, card, needed, selected: [], setFaceDown: true };
+                this.state.pendingTribute = { player, cardIndex, card, needed, selected: [], previousPhase: this.state.phase, setFaceDown: true };
                 this.state.phase = PHASE.TRIBUTE_SELECT;
                 this.state.tributeNeeded = needed;
                 this.state.tributeSelected = [];
@@ -1848,12 +2090,14 @@ export class GameEngine {
 
     canActivateSetSpell(player, card) {
         if (!card || card.type !== "spell" || !card.faceDown) return { canActivate: false, reason: "这不是盖放的魔法卡" };
+        if (player !== this.state.currentPlayer) return { canActivate: false, reason: "只能在自己的回合发动魔法" };
         if (!player.spellTrapZone.includes(card)) return { canActivate: false, reason: "该魔法卡不在你的后场" };
-        if (card.setTurn >= this.state.turn) return { canActivate: false, reason: "盖放魔法要到下个自己的回合才能发动" };
+        if (card.setTurn >= this.state.turn && card.subtype === "quick_play") return { canActivate: false, reason: "速攻魔法盖放当回合不能发动" };
         if (this.state.currentPlayer !== player) return { canActivate: false, reason: "普通魔法只能在自己的回合发动" };
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) {
             return { canActivate: false, reason: "普通魔法只能在主要阶段发动" };
         }
+        if (card.rulesVersion && !this.canPlayEffect(player, card).canPlay) return { canActivate: false, reason: "条件、资源不足或同名效果本回合已使用" };
         const effect = card.effect || card.effects?.[0];
         const targetType = this.getEffectTargetType(effect);
         if (!["none", "enemy_player", "self_player", "both_players"].includes(targetType)
@@ -1874,6 +2118,10 @@ export class GameEngine {
             .some(target => target === selectedTarget || target.instanceId === selectedTarget?.instanceId)) {
             return { success: false, message: "目标已经失效或不是合法目标" };
         }
+        if (card.rulesVersion) {
+            const cost = card.effects[0]?.cost;
+            if (cost && !this._checkCost(player, cost).ok) return { success: false, message: "LP不足" };
+        }
         const index = player.spellTrapZone.indexOf(card);
         if (index < 0) return { success: false, message: "盖放魔法已经不在场上" };
         player.spellTrapZone.splice(index, 1);
@@ -1882,7 +2130,7 @@ export class GameEngine {
         if (card.isFieldSpell) {
             if (player.fieldZone) player.graveyard.push(player.fieldZone);
             player.fieldZone = card;
-            const fieldMessage = this.triggerAllEffects(player, card, "manual");
+            const fieldMessage = this.triggerAllEffects(player, card, "field");
             return { success: true, message: `翻开发动场地魔法${card.name}${fieldMessage ? `：${fieldMessage}` : ""}`, card, isFieldSpell: true };
         }
         const effectMessage = selectedTarget
@@ -1895,16 +2143,19 @@ export class GameEngine {
     // ---------- 翻转召唤 ----------
     flipSummon(player, card) {
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
+        if (player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合翻转召唤" };
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) return { success: false, message: "只能在主要阶段翻转召唤" };
         if (!card) return { success: false, message: "没有选择怪兽" };
         if (card.faceUp) return { success: false, message: "该怪兽已经是表侧表示" };
         if (card.position !== MONSTER_POSITION.DEFENSE) return { success: false, message: "只能翻转里侧守备表示的怪兽" };
-        if (card.setTurn === this.state.turn) return { success: false, message: "本回合盖放的怪兽不能翻转召唤" };
+        if (card.setTurn === this.state.turn || card.themedState?.frozenUntil >= this.state.turn) return { success: false, message: "本回合盖放或冻结的怪兽不能翻转召唤" };
 
         const idx = player.monsterZone.indexOf(card);
         if (idx === -1) return { success: false, message: "该怪兽不在场上" };
 
-        // 翻转召唤：里侧→表侧守备，不占通常召唤次数
+        // 翻转召唤变为表侧攻击表示，不占通常召唤次数。
+        card.position = MONSTER_POSITION.ATTACK;
+        card.canAttack = !this.state.firstTurn && !player.skipBattlePhase && !card.cannotAttack;
         card.faceUp = true;
         card.faceDown = false;
         card.wasFlipSummoned = true;
@@ -1912,7 +2163,9 @@ export class GameEngine {
 
         let msg = `翻转召唤了${card.name}`;
         // 触发翻转效果
-        const flipResult = this.triggerAllEffects(player, card, "onFlip");
+        const flipEvent = { sourceCard: card, sourcePlayer: player, flippedCard: card };
+        this.emit("onFlip", flipEvent);
+        const flipResult = this.triggerEvent("onFlip", flipEvent);
         if (flipResult) msg += `，${flipResult}`;
 
         this.emit("onSummon", { sourceCard: card, sourcePlayer: player, summonedCard: card, isFlipSummon: true });
@@ -1922,9 +2175,12 @@ export class GameEngine {
     // ---------- 手动攻守转换 ----------
     changePosition(player, card) {
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
+        if (player !== this.state.currentPlayer) return { success: false, message: "只能在自己的回合改变表示形式" };
         if (this.state.phase !== PHASE.MAIN_1 && this.state.phase !== PHASE.MAIN_2) return { success: false, message: "只能在主要阶段转换姿态" };
         if (!card) return { success: false, message: "没有选择怪兽" };
         if (!card.faceUp) return { success: false, message: "里侧怪兽不能手动转换姿态" };
+        if (card.setTurn === this.state.turn && !card.hasAttackedThisTurn) return { success: false, message: "本回合召唤或盖放的怪兽不能手动改变表示形式" };
+        if (card.themedState?.frozenUntil >= this.state.turn) return { success: false, message: "冻结期间不能改变表示形式" };
         if (card.positionChangedThisTurn) return { success: false, message: "该怪兽本回合已经转换过姿态" };
         if (card.hasAttackedThisTurn) return { success: false, message: "已经攻击过的怪兽本回合不能转换姿态" };
 
@@ -1943,11 +2199,8 @@ export class GameEngine {
         const oldPos = card.position;
         card.position = oldPos === MONSTER_POSITION.ATTACK ? MONSTER_POSITION.DEFENSE : MONSTER_POSITION.ATTACK;
         card.positionChangedThisTurn = true;
-
-        // 转换后不能攻击（如果变成守备表示）
-        if (card.position === MONSTER_POSITION.DEFENSE) {
-            card.canAttack = false;
-        }
+        // 未攻击的怪兽由守备转为攻击后可以攻击。
+        card.canAttack = card.position === MONSTER_POSITION.ATTACK && !card.cannotAttack && !this.state.firstTurn && !player.skipBattlePhase;
 
         const posName = card.position === MONSTER_POSITION.ATTACK ? "攻击表示" : "守备表示";
         let msg = `${card.name}变为${posName}`;
@@ -1958,46 +2211,36 @@ export class GameEngine {
     }
 
     // ---------- 效果处理 ----------
-    triggerAllEffects(player, card, triggerType) {
+    triggerAllEffects(player, card, triggerType, eventContext = {}) {
+        if (this.state.gameOver || !card) return null;
+        if (triggerType === "manual" && card.type === "monster" &&
+            (player !== this.state.currentPlayer || !player.monsterZone.includes(card) || !card.faceUp ||
+             ![PHASE.MAIN_1, PHASE.MAIN_2].includes(this.state.phase))) return null;
+        if (card.effectNegated || card.themedState?.sealedUntil >= this.state.turn) return null;
         const effects = card.effects || [];
-        if (effects.length === 0 && card.effect) {
-            // 兼容旧 effect 字段
-            return this._triggerLegacyEffect(player, card);
-        }
-
-        let combinedMsg = "";
-        for (const eff of effects) {
-            if (eff.trigger && eff.trigger !== triggerType) continue;
-
+        if (!effects.length && card.effect) return this._triggerLegacyEffect(player, card, triggerType, eventContext);
+        const messages = [];
+        for (const [index, eff] of effects.entries()) {
+            if (getEffectTrigger(eff) !== triggerType) continue;
+            if (eventContext.effectIndex != null && eventContext.effectIndex !== index) continue;
             if (!this._checkEffectCondition(player, eff.condition)) continue;
-
-            // 检查一回合一次
-            if (eff.oncePerTurn || eff.limit?.oncePerTurn) {
-                if (card.oncePerTurnUsed) continue;
-            }
-
-            // 检查 phase 限制
+            const themed = eff.type === "themedAction";
+            const key = `${card.id}:${index}`;
+            if (themed && !this.canActivateThemedEffect(player, card, eff, eventContext)) continue;
+            if (!themed && (eff.oncePerTurn || eff.limit?.oncePerTurn) && card.oncePerTurnUsed) continue;
             if (eff.limit?.phase && !eff.limit.phase.includes(this.state.phase)) continue;
-
-            // 检查是否只在自己回合
             if (eff.limit?.onlyDuringOwnTurn && player !== this.state.currentPlayer) continue;
-
-            // 怪兽主动技能在这里支付代价；魔法卡代价已在发动流程统一支付。
-            if (triggerType === "manual" && card.type === "monster" && eff.cost) {
-                const costCheck = this._checkCost(player, eff.cost);
-                if (!costCheck.ok) continue;
-            }
-
-            if (eff.oncePerTurn || eff.limit?.oncePerTurn) card.oncePerTurnUsed = true;
-
-            // 执行效果
-            const result = this._executeEffect(player, card, eff);
-            if (result) combinedMsg += (combinedMsg ? "，" : "") + result;
+            if (triggerType === "manual" && card.type === "monster" && eff.cost && !this._checkCost(player, eff.cost).ok) continue;
+            if (themed) (player.themedUses ||= {})[key] = this.state.turn;
+            else if (eff.oncePerTurn || eff.limit?.oncePerTurn) card.oncePerTurnUsed = true;
+            const selectedTarget = eventContext.selectedTarget ?? (triggerType === "onAttacked" ? eventContext.attacker : null);
+            const result = this._executeEffect(player, card, eff, selectedTarget, eventContext);
+            if (result) messages.push(result);
         }
-        return combinedMsg || null;
+        return messages.join("，") || null;
     }
 
-    _executeEffect(player, card, eff, selectedTarget = null) {
+    _executeEffect(player, card, eff, selectedTarget = null, eventContext = {}) {
         const opp = player === this.state.currentPlayer ? this.state.opponentPlayer : this.state.currentPlayer;
 
         // 检查效果处理器是否存在
@@ -2012,6 +2255,7 @@ export class GameEngine {
         }
 
         const ctx = {
+            ...eventContext,
             gameState: this.state,
             player,
             opponent: opp,
@@ -2021,7 +2265,7 @@ export class GameEngine {
             target: targets[0] || null,
             targets,
             value: eff.value || 0,
-            event: eff.trigger || "manual",
+            event: getEffectTrigger(eff),
             engine: this,
             targetSpec,
             duration: eff.duration,
@@ -2060,31 +2304,34 @@ export class GameEngine {
         return handler(ctx);
     }
 
-    _triggerLegacyEffect(player, card) {
+    _triggerLegacyEffect(player, card, triggerType = "manual", eventContext = {}) {
         const eff = card.effect;
         if (!eff) return null;
+        if (getEffectTrigger(eff) !== triggerType) return null;
         const opp = player === this.state.currentPlayer ? this.state.opponentPlayer : this.state.currentPlayer;
         const handler = effectHandlers[eff.type];
         if (!handler) return null;
-        const ctx = { gameState: this.state, player, opponent: opp, sourcePlayer: player, sourceCard: card, card, target: null, targets: [], value: eff.value || 0, event: eff.trigger || "manual", engine: this, targetSpec: null, duration: null };
+        const ctx = {
+            ...eventContext,
+            gameState: this.state,
+            player,
+            opponent: opp,
+            sourcePlayer: player,
+            sourceCard: card,
+            card,
+            target: eventContext.selectedTarget || null,
+            targets: eventContext.selectedTarget ? [eventContext.selectedTarget] : [],
+            value: eff.value || 0,
+            event: getEffectTrigger(eff),
+            engine: this,
+            targetSpec: null,
+            duration: null,
+        };
         return handler(ctx);
     }
 
     triggerEffect(player, card, selectedTarget = null) {
-        if (card.effects && card.effects.length > 0) {
-            // 新 effects 数组
-            let combinedMsg = "";
-            for (const eff of card.effects) {
-                if (eff.oncePerTurn || eff.limit?.oncePerTurn) {
-                    if (card.oncePerTurnUsed) continue;
-                    card.oncePerTurnUsed = true;
-                }
-                const result = this._executeEffect(player, card, eff, selectedTarget);
-                if (result) combinedMsg += (combinedMsg ? "，" : "") + result;
-            }
-            return combinedMsg || null;
-        }
-        return this._triggerLegacyEffect(player, card);
+        return this.triggerAllEffects(player, card, "manual", { selectedTarget });
     }
 
     // ---------- 兼容旧的 getEffectTargetType ----------
@@ -2109,6 +2356,12 @@ export class GameEngine {
     }
 
     canPlayEffect(player, card) {
+        if (card.rulesVersion) {
+            const cost = card.effects[0]?.cost;
+            const available = (!cost || player.lp > cost.value) && card.effects.some(effect =>
+                effect.trigger === "manual" && this.canActivateThemedEffect(player, card, effect));
+            return { canPlay: available, reason: available ? "" : "条件、资源不足或同名效果本回合已使用" };
+        }
         if (!card.effect && (!card.effects || card.effects.length === 0)) return { canPlay: true, reason: "" };
         const tt = this.getEffectTargetType(card.effect || (card.effects && card.effects[0]));
         if (tt === "none" || tt === "enemy_player" || tt === "self_player" || tt === "both_players") return { canPlay: true, reason: "" };
@@ -2126,9 +2379,20 @@ export class GameEngine {
     getEffectiveDefense(monster) { return monster.currentDefense; }
 
     _resolveBattleTrap(attacker, target, attackerOwner, defenderOwner) {
-        const trap = defenderOwner.spellTrapZone.find(card => card.type === "trap" && card.faceDown && card.canActivate);
+        this._lastActivatedTrap = null;
+        const attackEvent = { attacker, target, attackerOwner, defenderOwner };
+        this.emit("onAttacked", attackEvent);
+
+        // 只有声明了 onAttacked 的盖放陷阱才能响应攻击；不能因为后场第一张
+        // 卡是手动魔法/其它触发时机，就被错误消耗。
+        const trap = defenderOwner.spellTrapZone.find(card => {
+            if (card.type !== "trap" || !card.faceDown || !card.canActivate || card.setTurn >= this.state.turn) return false;
+            const effects = card.effects?.length ? card.effects : card.effect ? [card.effect] : [];
+            return effects.some(effect => getEffectTrigger(effect) === "onAttacked" && (effect.type !== "themedAction" || this.canActivateThemedEffect(defenderOwner, card, effect, { ...attackEvent, battle: {} })));
+        });
         if (!trap) return { canceled: false, reduction: 0, message: "" };
-        const effect = trap.effects?.[0] || trap.effect || {};
+
+        const effects = trap.effects?.length ? trap.effects : trap.effect ? [trap.effect] : [];
         const idx = defenderOwner.spellTrapZone.indexOf(trap);
         if (idx >= 0) defenderOwner.spellTrapZone.splice(idx, 1);
         trap.faceDown = false;
@@ -2137,49 +2401,37 @@ export class GameEngine {
         const prefix = `${defenderOwner.name}发动陷阱【${trap.name}】`;
         // 保留陷阱卡完整数据供动画使用
         this._lastActivatedTrap = trap;
-        switch (effect.type) {
-            case "reduceDamage":
-                return { canceled: false, reduction: Math.max(0, Number(effect.value) || 0), message: `${prefix}，本次战斗伤害减少${Math.max(0, Number(effect.value) || 0)}` };
-            case "returnToHand": {
-                const mi = attackerOwner.monsterZone.indexOf(attacker);
-                if (mi >= 0) attackerOwner.monsterZone.splice(mi, 1);
-                resetCardState(attacker);
-                attackerOwner.hand.push(attacker);
-                return { canceled: true, reduction: 0, message: `${prefix}，${attacker.name}返回手牌，攻击无效` };
+        const battle = { canceled: false, reduction: 0 };
+        const effectMessage = this.triggerAllEffects(defenderOwner, trap, "onAttacked", {
+            ...attackEvent,
+            sourceCard: trap,
+            sourcePlayer: defenderOwner,
+            selectedTarget: attacker,
+            battle,
+        });
+
+        for (const effect of effects) {
+            if (getEffectTrigger(effect) !== "onAttacked") continue;
+            if (effect.type === "reduceDamage") {
+                battle.reduction += Math.max(0, Number(effect.value) || 0);
             }
-            case "cannotAttack":
-                attackerOwner.monsterZone.forEach(card => { card.cannotAttack = true; card.canAttack = false; });
-                return { canceled: true, reduction: 0, message: `${prefix}，对方怪兽本回合不能攻击` };
-            case "reflectDamage": {
-                const reflected = Math.max(0, this.getEffectiveAttack(attacker));
-                attackerOwner.takeDamage(reflected);
-                return { canceled: true, reduction: 0, message: `${prefix}，攻击无效并反弹${reflected}点伤害` };
+            if (["cancelAttackAndReturn", "cannotAttack", "counterDestroy", "destroyAttacker", "reflectDamage", "returnToHand"].includes(effect.type)) {
+                battle.canceled = true;
             }
-            case "counterDestroy":
-            case "destroyAttacker": {
-                destroyMonster(attackerOwner, attacker, this);
-                if (hasResonance(defenderOwner, 2)) attackerOwner.takeDamage(500);
-                return { canceled: true, reduction: 0, message: `${prefix}，攻击怪兽被破坏${hasResonance(defenderOwner, 2) ? "，共鸣追加500点伤害" : ""}` };
-            }
-            case "buffSelfAttack":
-                defenderOwner.monsterZone.forEach(card => {
-                    card.currentAttack = safe(card.currentAttack + (Number(effect.value) || 0));
-                });
-                return { canceled: false, reduction: 0, message: `${prefix}，己方怪兽攻击力上升${Number(effect.value) || 0}` };
-            case "buffSelfDefense":
-                defenderOwner.monsterZone.forEach(card => {
-                    card.currentDefense = safe(card.currentDefense + (Number(effect.value) || 0));
-                });
-                return { canceled: false, reduction: 0, message: `${prefix}，己方怪兽守备力上升${Number(effect.value) || 0}` };
-            case "healPlayer":
-                defenderOwner.heal(Number(effect.value) || 0);
-                return { canceled: false, reduction: 0, message: `${prefix}，回复${Number(effect.value) || 0}LP` };
-            case "directDamage":
-                attackerOwner.takeDamage(Number(effect.value) || 0);
-                return { canceled: false, reduction: 0, message: `${prefix}，给予对方${Number(effect.value) || 0}点伤害` };
-            default:
-                return { canceled: false, reduction: 0, message: `${prefix}` };
         }
+        if (effects.some(effect => getEffectTrigger(effect) === "onAttacked" && effect.type === "destroyAttacker")
+            && hasResonance(defenderOwner, 2)) {
+            attackerOwner.takeDamage(500);
+        }
+
+        const suffix = effectMessage ? `，${effectMessage}` : "";
+        const resonanceSuffix = effects.some(effect => getEffectTrigger(effect) === "onAttacked" && effect.type === "destroyAttacker")
+            && hasResonance(defenderOwner, 2) ? "，共鸣追加500点伤害" : "";
+        return {
+            canceled: battle.canceled,
+            reduction: battle.reduction,
+            message: `${prefix}${suffix}${resonanceSuffix}`,
+        };
     }
 
     discardToEndLimit(player, selectedInstanceIds = null) {
@@ -2188,15 +2440,29 @@ export class GameEngine {
 
     attack(attacker, target) {
         if (this.state.gameOver) return { success: false, message: "游戏已结束" };
-        if (!attacker.canAttack || attacker.hasAttackedThisTurn) return { success: false, message: "该怪兽本回合不能攻击" };
-        if (attacker.position === MONSTER_POSITION.DEFENSE) return { success: false, message: "守备表示怪兽不能攻击" };
-        if (attacker.cannotAttack) return { success: false, message: "该怪兽不能攻击" };
         if (this.state.firstTurn && GAME_CONFIG.FIRST_TURN_NO_BATTLE) return { success: false, message: "先攻第一回合不能攻击" };
-
-        // 放学后的茶会效果：当回合不能直接攻击玩家
+        if (this.state.phase !== PHASE.BATTLE) return { success: false, message: "只能在战斗阶段攻击" };
         const attackerOwner = this.state.currentPlayer;
+        if (!attackerOwner.monsterZone.includes(attacker)) return { success: false, message: "只能使用己方场上的怪兽攻击" };
+        const replaying = this.state.pendingBattleReplay?.attackerId === attacker.instanceId;
+        if (!replaying && (!attacker.canAttack || (Number(attacker.attacksMadeThisTurn) || 0) >= getAttackLimit(attacker))) {
+            return { success: false, message: "该怪兽本回合不能攻击" };
+        }
+        if (!attacker.faceUp || attacker.position === MONSTER_POSITION.DEFENSE) return { success: false, message: "守备表示怪兽不能攻击" };
+        if (attacker.cannotAttack || attackerOwner.skipBattlePhase || attacker.themedState?.frozenUntil >= this.state.turn) return { success: false, message: "该怪兽不能攻击" };
+        // 放学后的茶会效果：当回合不能直接攻击玩家
         if (target === "player" && attackerOwner.noDirectAttackThisTurn) {
             return { success: false, message: "场地魔法效果：当回合不能直接攻击玩家" };
+        }
+
+        const defenderOwner = this.state.opponentPlayer;
+        if (target === "player") {
+            if (defenderOwner.monsterZone.length > 0) return { success: false, message: "对方场上有怪兽时不能直接攻击" };
+        } else if (!target || !defenderOwner.monsterZone.includes(target)) {
+            return { success: false, message: "目标怪兽不在对方场上" };
+        }
+        if (target && target !== "player" && target.cannotBeAttacked) {
+            return { success: false, message: `${target.name}本回合不能被攻击` };
         }
 
         // 效果①优先攻击限制：如果目标有priorityTarget，且对方场上有其他怪兽，则必须先攻击其他怪兽
@@ -2228,12 +2494,22 @@ export class GameEngine {
             }
         }
 
-        const defenderOwner = this.state.opponentPlayer;
-        const trapResult = this._resolveBattleTrap(attacker, target, attackerOwner, defenderOwner);
+        const replay = this.state.pendingBattleReplay;
+        this.state.pendingBattleReplay = null;
+        const beforeDefenders = [...defenderOwner.monsterZone];
+        const trapResult = replaying ? { canceled: false, reduction: replay.reduction, message: "战斗卷回，重新选择目标" }
+            : this._resolveBattleTrap(attacker, target, attackerOwner, defenderOwner);
+        if (!attackerOwner.monsterZone.includes(attacker) || !attacker.faceUp || attacker.position !== MONSTER_POSITION.ATTACK || attacker.cannotAttack) trapResult.canceled = true;
+        const defendersChanged = beforeDefenders.length !== defenderOwner.monsterZone.length
+            || beforeDefenders.some(card => !defenderOwner.monsterZone.includes(card));
+        if (!trapResult.canceled && defendersChanged) {
+            if (!replaying) markAttackUsed(attacker);
+            this.state.pendingBattleReplay = { attackerId: attacker.instanceId, reduction: trapResult.reduction || 0 };
+            return { success: true, message: `${trapResult.message}；攻击目标变化，请重新选择目标`, replay: true };
+        }
         if (trapResult.canceled) {
             if (attackerOwner.monsterZone.includes(attacker)) {
-                attacker.canAttack = false;
-                attacker.hasAttackedThisTurn = true;
+                if (!replaying) markAttackUsed(attacker);
             }
             return { success: true, message: trapResult.message, trap: true, trapCard: this._lastActivatedTrap, attackCanceled: true };
         }
@@ -2244,76 +2520,82 @@ export class GameEngine {
             : {};
 
         if (target === "player") {
-            if (defenderOwner.monsterZone.length > 0) return { success: false, message: "对方场上有怪兽时不能直接攻击" };
             const rawDamage = this.getEffectiveAttack(attacker);
             const damage = Math.max(0, rawDamage - reduction);
             defenderOwner.takeDamage(damage);
-            attacker.canAttack = false;
-            attacker.hasAttackedThisTurn = true;
-            this.emit("onBattleDamage", { attacker, damage, target: "player" });
+            if (!replaying) markAttackUsed(attacker);
+            this.emit("onBattleDamage", { attacker, damage, target: "player", attackerOwner, defenderOwner });
             return { success: true, message: `${trapPrefix}${attacker.name}直接攻击，造成${damage}点伤害`, ...trapInfo };
         }
 
         const atkPower = Math.max(0, attacker.currentAttack || 0);
         let msg = `${trapPrefix}${attacker.name}攻击${target.name}`;
+        let battleDamage = 0;
+        let pendingFlip = null;
 
         if (target.position === MONSTER_POSITION.DEFENSE || !target.faceUp) {
             if (!target.faceUp) {
                 target.faceUp = true;
                 target.faceDown = false;
                 msg += "，目标翻开为守备表示";
-                const flipResult = this.triggerAllEffects(defenderOwner, target, "onFlip");
-                if (flipResult) msg += `，${flipResult}`;
+                const flipEvent = { sourceCard: target, sourcePlayer: defenderOwner, flippedCard: target, cause: "attack" };
+                this.emit("onFlip", flipEvent);
+                pendingFlip = flipEvent;
             }
             const defPower = this.getEffectiveDefense(target);
-            if (target.cannotBeDestroyedByBattle && atkPower >= defPower) {
-                attacker.canAttack = false;
-                attacker.hasAttackedThisTurn = true;
-                return { success: true, message: `${msg}，${target.name}不受战斗破坏`, ...trapInfo };
-            }
             if (atkPower > defPower) {
-                destroyMonster(defenderOwner, target, this);
-                const hasPiercing = attacker.piercingDamage || attacker.effects?.some(effect => effect.type === "piercingDamage");
-                const damage = hasPiercing ? Math.max(0, atkPower - defPower - reduction) : 0;
-                if (damage > 0) defenderOwner.takeDamage(damage);
-                msg += `，守备怪兽被破坏${damage > 0 ? `，贯穿造成${damage}点伤害` : ""}`;
+                const destroyed = destroyMonster(defenderOwner, target, this, "battle");
+                const hasPiercing = attacker.themedState?.piercingUntil >= this.state.turn || attacker.piercingDamage || attacker.effects?.some(effect => effect.type === "piercingDamage");
+                battleDamage = hasPiercing && !target.preventsBattleDamage
+                    ? Math.max(0, atkPower - defPower - reduction)
+                    : 0;
+                if (battleDamage > 0) defenderOwner.takeDamage(battleDamage);
+                msg += destroyed
+                    ? `，守备怪兽被破坏${battleDamage > 0 ? `，贯穿造成${battleDamage}点伤害` : ""}`
+                    : `，${target.name}不受战斗破坏${battleDamage > 0 ? `，贯穿造成${battleDamage}点伤害` : ""}`;
             } else if (atkPower === defPower) {
                 msg += "，攻击力等于守备力，均不破坏且不受伤害";
             } else {
-                const damage = Math.max(0, defPower - atkPower - reduction);
-                attackerOwner.takeDamage(damage);
-                msg += `，攻击方受到${damage}点战斗伤害`;
+                battleDamage = attacker.preventsBattleDamage ? 0 : Math.max(0, defPower - atkPower);
+                attackerOwner.takeDamage(battleDamage);
+                msg += `，攻击方受到${battleDamage}点战斗伤害`;
             }
         } else {
             const defPower = Math.max(0, target.currentAttack || 0);
-            if (target.cannotBeDestroyedByBattle && atkPower >= defPower) {
-                attacker.canAttack = false;
-                attacker.hasAttackedThisTurn = true;
-                return { success: true, message: `${msg}，${target.name}不受战斗破坏`, ...trapInfo };
-            }
             if (atkPower > defPower) {
-                const damage = Math.max(0, atkPower - defPower - reduction);
-                defenderOwner.takeDamage(damage);
-                destroyMonster(defenderOwner, target, this);
-                msg += `，${target.name}被破坏，对方受到${damage}点战斗伤害`;
+                battleDamage = target.preventsBattleDamage ? 0 : Math.max(0, atkPower - defPower - reduction);
+                defenderOwner.takeDamage(battleDamage);
+                const destroyed = destroyMonster(defenderOwner, target, this, "battle");
+                msg += destroyed
+                    ? `，${target.name}被破坏，对方受到${battleDamage}点战斗伤害`
+                    : `，${target.name}不受战斗破坏，对方受到${battleDamage}点战斗伤害`;
+            } else if (atkPower === defPower && atkPower === 0) {
+                msg += "，双方攻击力均为0，均不破坏";
             } else if (atkPower === defPower) {
-                destroyMonster(attackerOwner, attacker, this);
-                destroyMonster(defenderOwner, target, this);
-                msg += "，攻击力相同，双方怪兽都被破坏";
+                const attackerDestroyed = destroyMonster(attackerOwner, attacker, this, "battle");
+                const targetDestroyed = destroyMonster(defenderOwner, target, this, "battle");
+                msg += attackerDestroyed && targetDestroyed
+                    ? "，攻击力相同，双方怪兽都被破坏"
+                    : "，攻击力相同，未能破坏具有战斗抗性的怪兽";
             } else {
-                const damage = Math.max(0, defPower - atkPower - reduction);
-                destroyMonster(attackerOwner, attacker, this);
-                attackerOwner.takeDamage(damage);
-                msg += `，${attacker.name}被破坏，攻击方受到${damage}点战斗伤害`;
+                const attackerDestroyed = destroyMonster(attackerOwner, attacker, this, "battle");
+                battleDamage = attacker.preventsBattleDamage ? 0 : Math.max(0, defPower - atkPower);
+                attackerOwner.takeDamage(battleDamage);
+                msg += attackerDestroyed
+                    ? `，${attacker.name}被破坏，攻击方受到${battleDamage}点战斗伤害`
+                    : `，${attacker.name}不受战斗破坏，攻击方受到${battleDamage}点战斗伤害`;
             }
         }
 
-        if (attackerOwner.monsterZone.includes(attacker)) {
-            attacker.canAttack = false;
-            attacker.hasAttackedThisTurn = true;
+        if (pendingFlip) {
+            const result = this.triggerEvent("onFlip", pendingFlip);
+            if (result) msg += `，${result}`;
         }
-        this.emit("onBattleDamage", { attacker, target, damage: atkPower });
-        return { success: true, message: msg, ...trapInfo };
+        if (attackerOwner.monsterZone.includes(attacker)) {
+            if (!replaying) markAttackUsed(attacker);
+        }
+        this.emit("onBattleDamage", { attacker, target, damage: battleDamage, attackerOwner, defenderOwner });
+        return { success: true, message: msg, damage: battleDamage, ...trapInfo };
     }
 
     // ---------- 游戏结束 ----------

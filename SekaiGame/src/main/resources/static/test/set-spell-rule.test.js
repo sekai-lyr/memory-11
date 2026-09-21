@@ -42,13 +42,13 @@ describe("盖放魔法与后场破坏", () => {
         assert.equal(state.players[1].graveyard.includes(trap), true);
     });
 
-    it("盖放魔法不能在盖放当回合发动", () => {
+    it("普通魔法可在盖放当回合发动", () => {
         const { state, engine, removal } = setup();
         state.players[0].spellTrapZone.push(removal);
         removal.faceDown = true;
         removal.setTurn = state.turn;
         const result = engine.canActivateSetSpell(state.players[0], removal);
-        assert.equal(result.canActivate, false);
+        assert.equal(result.canActivate, true);
     });
 
     it("盖放魔法可在之后自己的主要阶段发动", () => {

@@ -5,30 +5,49 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="theme-color" content="#070914">
     <title>Sekai Game</title>
-    <link rel="stylesheet" href="css/style.css?v=1.7.19">
+    <link rel="stylesheet" href="css/style.css?v=1.9.2-mobile">
 </head>
-<body>
+<body data-visual-route="bca">
 <div id="auth-screen" class="auth-screen">
-    <div class="auth-panel">
-        <div class="auth-brand"><span class="brand-mark">✦</span><strong>Sekai Game</strong><small>NETWORK</small></div>
-        <div class="auth-tabs">
-            <button class="auth-tab active" data-auth-mode="login" type="button">登录</button>
-            <button class="auth-tab" data-auth-mode="register" type="button">注册</button>
+    <div class="auth-ignition" data-auth-ignition>
+        <div class="auth-ignition-copy">
+            <span class="eyebrow">NIGHTCORD / ACCESS GATE</span>
+            <strong>激活你的卡组。</strong>
+            <p>登录后，牌堆才会真正进入决斗场。</p>
+            <span class="auth-ignition-code">SEKAI // 00:01 // READY</span>
         </div>
-        <form id="auth-form" autocomplete="on">
-            <label class="auth-field"><span>用户名</span><input id="auth-username" name="username" autocomplete="username" required></label>
-            <label class="auth-field"><span>密码</span><input id="auth-password" type="password" name="password" autocomplete="current-password" required></label>
-            <label class="auth-field auth-nick-field hidden"><span>昵称</span><input id="auth-nickname" name="nickname"></label>
-            <p id="auth-error" class="validation-line"></p>
-            <button type="submit" class="primary-action auth-submit">确认</button>
-        </form>
+        <div class="auth-card-orbit" aria-hidden="true">
+            <div class="auth-ignition-card" data-auth-rotate="-14"><img src="assets/cards/picture-extension/picture_070.jpg" alt=""></div>
+            <div class="auth-ignition-card" data-auth-rotate="9"><img src="assets/cards/complete/source_spell_021.jpg" alt=""></div>
+            <div class="auth-ignition-card" data-auth-rotate="-5"><img src="assets/cards/picture-extension/picture_071.webp" alt=""></div>
+        </div>
+        <div class="auth-panel">
+            <div class="auth-brand"><span class="brand-mark">SG</span><strong>Sekai Game</strong><small>NETWORK / CARD DUEL</small></div>
+            <div class="auth-tabs">
+                <button class="auth-tab active" data-auth-mode="login" type="button">登录</button>
+                <button class="auth-tab" data-auth-mode="register" type="button">注册</button>
+            </div>
+            <div class="auth-panel-kicker">PLAYER ACCESS <span>/// 01</span></div>
+            <div class="auth-panel-title">进入牌桌</div>
+            <p class="auth-panel-copy">同步你的收藏、卡组和决斗记录。</p>
+            <div class="auth-form-frame">
+            <form id="auth-form" autocomplete="on">
+                <label class="auth-field"><span>用户名</span><input id="auth-username" name="username" autocomplete="username" required></label>
+                <label class="auth-field"><span>密码</span><input id="auth-password" type="password" name="password" autocomplete="current-password" required></label>
+                <label class="auth-field auth-nick-field hidden"><span>昵称</span><input id="auth-nickname" name="nickname"></label>
+                <p id="auth-error" class="validation-line"></p>
+                <button type="submit" class="primary-action auth-submit"><span>确认</span><small>进入大厅</small></button>
+            </form>
+            </div>
+            <div class="auth-panel-footer"><span>LOCAL + SERVER SYNC</span><span>V1.8 / ONLINE</span></div>
+        </div>
     </div>
 </div>
 
 <div id="app-shell" class="app-shell is-hidden">
     <header class="topbar">
         <button class="brand" id="brand-home" type="button" aria-label="返回首页">
-            <span class="brand-mark">✦</span>
+            <span class="brand-mark">SG</span>
             <span><strong>Sekai Game</strong><small>NETWORK</small></span>
         </button>
         <div class="topbar-spacer"></div>
@@ -38,17 +57,25 @@
     </header>
 
     <aside class="sidebar" aria-label="主要导航">
-        <button data-route="home" class="nav-item active" type="button"><span class="nav-icon">⌂</span><span>首页</span></button>
-        <button data-route="shop" class="nav-item" type="button"><span class="nav-icon">✦</span><span>卡包</span></button>
-        <button data-route="collection" class="nav-item" type="button"><span class="nav-icon">▦</span><span>收藏</span></button>
-        <button data-route="decks" class="nav-item" type="button"><span class="nav-icon">▤</span><span>卡组</span></button>
+        <button data-route="home" class="nav-item active" type="button"><span class="nav-index">01</span><span>首页</span></button>
+        <button data-route="shop" class="nav-item" type="button"><span class="nav-index">02</span><span>卡包</span></button>
+        <button data-route="collection" class="nav-item" type="button"><span class="nav-index">03</span><span>收藏</span></button>
+        <button data-route="decks" class="nav-item" type="button"><span class="nav-index">04</span><span>卡组</span></button>
         <div class="nav-spacer"></div>
-        <button data-route="rules" class="nav-item" type="button"><span class="nav-icon">?</span><span>规则</span></button>
-        <button data-route="settings" class="nav-item" type="button"><span class="nav-icon">⚙</span><span>设置</span></button>
+        <button data-route="rules" class="nav-item" type="button"><span class="nav-index">05</span><span>规则</span></button>
+        <button data-route="settings" class="nav-item" type="button"><span class="nav-index">06</span><span>设置</span></button>
     </aside>
 
     <main id="screen-root" class="screen-root" aria-live="polite"></main>
 </div>
+
+<section id="app-loading" class="app-loading is-hidden" aria-live="polite" aria-busy="true">
+    <div class="app-loading-card">
+        <span class="app-loading-mark">SG</span>
+        <strong>正在准备大厅</strong>
+        <small>正在同步牌组，请稍候…</small>
+    </div>
+</section>
 
 <section class="battle-screen" id="battle-screen">
     <div class="duel-backdrop"></div>
@@ -114,17 +141,59 @@
 (function () {
     if (location.protocol === "file:") {
         document.body.innerHTML = `
-            <main style="min-height:100vh;display:grid;place-items:center;padding:32px;background:#070914;color:#f4f6ff;font-family:Arial,sans-serif">
+            <main style="min-height:100vh;display:grid;place-items:center;padding:32px;background:#070914;color:#f4f6ff;font-family:Bahnschrift,'Arial Narrow','Microsoft YaHei',sans-serif">
                 <section style="max-width:620px;border:1px solid #303858;background:#0d1020;padding:32px">
                     <h1 style="margin:0 0 14px">不能直接双击 index.html</h1>
-                    <p style="color:#aeb7d2;line-height:1.7">本项目使用 JavaScript ES Module。请双击项目中的 <strong>start.bat</strong>，或者在 IDEA Terminal 执行 <strong>npm start</strong>，再打开 http://127.0.0.1:8080。</p>
+                <p style="color:#aeb7d2;line-height:1.7">完整游戏请在项目根目录启动 Spring Boot，然后打开 <strong>http://127.0.0.1:8091</strong>。仅调试前端时，才在此目录运行 <strong>npm start</strong> 并访问端口 8080。</p>
                 </section>
             </main>`;
         return;
     }
+
+    // 主模块需要加载完整卡库和决斗 UI，认证页不能因此先显示、后可用。
+    const authTabs = [...document.querySelectorAll("[data-auth-mode]")];
+    const authError = document.getElementById("auth-error");
+    const nickField = document.querySelector(".auth-nick-field");
+    const authForm = document.getElementById("auth-form");
+    const syncAuthMode = mode => {
+        window.__nightcordAuthMode = mode;
+        authTabs.forEach(tab => tab.classList.toggle("active", tab.dataset.authMode === mode));
+        nickField?.classList.toggle("hidden", mode === "login");
+    };
+    const path = location.pathname.replace(/\/+$/, "");
+    const forcedAuthRoute = path === "/login" || path === "/register";
+    let hasStoredAuth = false;
+    if (!forcedAuthRoute && !new URLSearchParams(location.search).has("reset")) {
+        try { hasStoredAuth = localStorage.getItem("nightcord_auth") !== null; } catch { /* 浏览器禁用存储时保持默认认证页 */ }
+    }
+    if (hasStoredAuth) {
+        document.getElementById("auth-screen")?.classList.add("hidden");
+        document.getElementById("app-shell")?.classList.add("is-hidden");
+        document.getElementById("app-loading")?.classList.remove("is-hidden");
+    }
+    const initialMode = path === "/register" ? "register" : "login";
+    syncAuthMode(initialMode);
+    authTabs.forEach(tab => tab.addEventListener("click", () => {
+        window.__nightcordAuthModeTouched = true;
+        syncAuthMode(tab.dataset.authMode);
+        if (authError) authError.textContent = "";
+    }));
+    authForm?.addEventListener("submit", event => {
+        if (window.__nightcordAuthReady) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        if (authError) authError.textContent = "页面还在加载，请稍候再试";
+    }, true);
+
     const entry = document.createElement("script");
     entry.type = "module";
-        entry.src = "./js/main.js?v=1.7.45";
+    entry.src = "./js/main.js?v=1.8.4-mobile";
+    entry.addEventListener("error", () => {
+        document.getElementById("app-loading")?.classList.add("is-hidden");
+        document.getElementById("auth-screen")?.classList.remove("hidden");
+        const error = document.getElementById("auth-error");
+        if (error) error.textContent = "页面脚本加载失败，请刷新后重试";
+    }, { once: true });
     document.body.appendChild(entry);
 })();
 </script>

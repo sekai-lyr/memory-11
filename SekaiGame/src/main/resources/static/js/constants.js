@@ -5,7 +5,7 @@
 
 export const GAME_CONFIG = {
     START_LP: 8000,
-    MAX_LP: 8000,
+    MAX_LP: Number.MAX_SAFE_INTEGER,
     START_HAND_SIZE: 5,
     END_HAND_LIMIT: 6,
     MAX_HAND_SIZE: 99,

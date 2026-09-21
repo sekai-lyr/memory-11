@@ -6,7 +6,7 @@ const customCards = ALL_CARDS.filter(card => ["picture", "source_archive"].inclu
 
 describe("自制卡稀有度规则分层", () => {
     it("每张自制卡都有唯一规则签名", () => {
-        assert.equal(new Set(customCards.map(card => card.ruleSignature)).size, customCards.length);
+        assert.equal(new Set(customCards.map(card => `${card.type}:${card.ruleSignature}`)).size, customCards.length);
     });
 
     it("SR以上非陷阱卡拥有多段效果", () => {

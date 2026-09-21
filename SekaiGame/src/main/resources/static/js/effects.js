@@ -7,6 +7,7 @@
 import { getMonsterCinematicProfile } from "./monster-cinematics.js?v=1.1.1";
 
 const isBrowser = typeof document !== "undefined";
+let attackVisualBusyUntil = 0;
 
 function removeAfter(el, ms) {
     setTimeout(() => el.remove(), ms);
@@ -33,6 +34,14 @@ function getRect(el) {
     if (!el) return { left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
     if (typeof el.getBoundingClientRect === "function") return el.getBoundingClientRect();
     return el;
+}
+
+function setBattleCamera(battleScreen, { x = 0, y = 0, scale = 1, duration = 180 } = {}) {
+    if (!battleScreen) return;
+    battleScreen.style.setProperty("--bca-camera-x", x + "px");
+    battleScreen.style.setProperty("--bca-camera-y", y + "px");
+    battleScreen.style.setProperty("--bca-camera-scale", String(scale));
+    battleScreen.style.setProperty("--bca-camera-duration", duration + "ms");
 }
 
 const RULE_VISUALS = {
@@ -1617,10 +1626,17 @@ export function playHitImpact(x, y, attribute = "none", isDirectAttack = false) 
 export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, attackerSurvived, playerHud) {
     if (!isBrowser || !attackerSlot || !attackerCard) return Promise.resolve();
 
+    const now = Date.now();
+    const lightweight = now < attackVisualBusyUntil;
+    attackVisualBusyUntil = Math.max(attackVisualBusyUntil, now + (lightweight ? 350 : 1150));
     const from = getRect(attackerSlot);
     const to = targetSlot ? getRect(targetSlot) : (playerHud ? getRect(playerHud) : from);
     const battlefield = document.querySelector(".battlefield");
-    playMonsterAttackSignature(from, to, attackerCard);
+    if (battlefield) {
+        battlefield.classList.add("attack-performance-mode");
+        setTimeout(() => battlefield.classList.remove("attack-performance-mode"), 1300);
+    }
+    if (!lightweight) playMonsterAttackSignature(from, to, attackerCard);
 
     const sourceElement = typeof attackerSlot.getBoundingClientRect === "function" ? attackerSlot : null;
     const sourceCard = sourceElement?.querySelector(".card") || sourceElement;
@@ -1632,7 +1648,7 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
 
     // 创建飞行克隆体
     const fly = document.createElement("div");
-    fly.className = "flying-card attack-fly";
+    fly.className = `flying-card attack-fly${lightweight ? " attack-fly-lite" : ""}`;
     fly.innerHTML = `<div class="card in-field rarity-${attackerCard.rarity || "N"}"><div class="card-frame elem-${attackerCard.attribute || "none"} type-monster"><div class="card-header"><span class="card-name">${escapeHtml(attackerCard.name)}</span><span class="card-level">Lv.${attackerCard.level || "?"}</span></div><div class="card-art"><div class="card-art-inner">${createFlyingCardInner(attackerCard)}</div></div><div class="card-footer"><span class="stat-atk"><span>ATK</span>${attackerCard.currentAttack || 0}</span></div></div></div>`;
 
     // 起始位置：怪兽槽位中心
@@ -1660,7 +1676,7 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
         fly.style.opacity = "1";
         fly.style.transition = "transform 0.15s cubic-bezier(.4,0,.2,1), opacity 0.1s ease";
         fly.style.transform = "translateY(-15px) scale(1.05)";
-        fly.style.filter = "brightness(1.4)";
+        fly.style.filter = lightweight ? "none" : "brightness(1.4)";
     });
 
     // 阶段2：冲向目标 (150-450ms)
@@ -1673,9 +1689,11 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
             wind: "rgba(120,255,160,.4)", earth: "rgba(200,170,80,.4)",
             light: "rgba(255,240,120,.5)", dark: "rgba(180,100,255,.5)",
         };
-        fly.style.filter = `brightness(1.6) drop-shadow(0 0 10px ${trailColors[attr] || "rgba(255,200,100,.4)"})`;
-        // 属性专属冲刺拖尾
-        if (attr !== "none") {
+        fly.style.filter = lightweight
+            ? "none"
+            : `brightness(1.6) drop-shadow(0 0 10px ${trailColors[attr] || "rgba(255,200,100,.4)"})`;
+        // 属性专属冲刺拖尾；连续攻击时省略，避免叠加大量短命节点。
+        if (!lightweight && attr !== "none") {
             for (let t = 0; t < 4; t++) {
                 const trail = document.createElement("div");
                 trail.style.cssText = `position:fixed; z-index:258; pointer-events:none; width:20px; height:4px; border-radius:2px; left:${startX + dx * (t / 4) + 48}px; top:${startY + dy * (t / 4) + 62}px; transform:rotate(${Math.atan2(dy, dx) * 180 / Math.PI}deg); background:linear-gradient(90deg, transparent, ${trailColors[attr]}, transparent); opacity:${0.6 - t * 0.12}; animation:attackTrailFade .3s linear forwards;`;
@@ -1701,16 +1719,15 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
 
     // 阶段3：碰撞！(450ms)
     setTimeout(() => {
-        // 增强版打击命中特效
         const hitX = endX + 48;
         const hitY = endY + 62;
         const isDirect = !targetSlot;
-        playHitImpact(hitX, hitY, attackerCard.attribute || "none", isDirect);
+        if (!lightweight) playHitImpact(hitX, hitY, attackerCard.attribute || "none", isDirect);
 
         // 卡牌碰撞回弹
         fly.style.transition = "transform 0.1s ease-out, filter 0.1s ease";
         fly.style.transform = `translate(${dx * 0.85}px, ${dy * 0.85}px) scale(1.1)`;
-        fly.style.filter = "brightness(2) blur(1px)";
+        fly.style.filter = lightweight ? "none" : "brightness(2) blur(1px)";
     }, 450);
 
     // 阶段4：根据结果决定去向 (600ms)
@@ -1719,7 +1736,7 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
             // 存活：滑回原位
             fly.style.transition = "transform 0.5s cubic-bezier(.25,.8,.25,1), filter 0.5s ease, opacity 0.5s ease";
             fly.style.transform = "translate(0, 0) scale(1)";
-            fly.style.filter = "brightness(1.1)";
+            fly.style.filter = lightweight ? "none" : "brightness(1.1)";
             fly.style.opacity = "1";
 
             // 回到原位后消失
@@ -1768,7 +1785,7 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
             fly.style.transition = "transform 0.35s cubic-bezier(.4,0,.2,1), opacity 0.35s ease, filter 0.35s ease";
             fly.style.transform = `translate(${dx}px, ${dy}px) scale(0.2) rotate(${(Math.random()-0.5)*30}deg)`;
             fly.style.opacity = "0";
-            fly.style.filter = "brightness(2.5) blur(3px)";
+            fly.style.filter = lightweight ? "none" : "brightness(2.5) blur(3px)";
 
             setTimeout(() => { restoreSource(); shatter.remove(); fly.remove(); resolve(); }, 500);
         }
@@ -1779,8 +1796,15 @@ export function playAttackAnimation(attackerSlot, targetSlot, attackerCard, atta
 
 function createFlyingCardInner(card) {
     const img = card.thumbnail || card.image;
-    if (img) return `<img src="${escapeHtml(img)}" alt="${escapeHtml(card.name)}" style="width:100%;height:100%;object-fit:cover;" onerror="this.style.display='none'">`;
-    return `<div style="width:100%;height:100%;display:grid;place-items:center;font-size:28px;font-weight:900;color:rgba(255,255,255,.6)">${escapeHtml(card.name?.[0] || "?")}</div>`;
+    const imageClass = card?.rarity === "R" ? "" : "card-breeze-image";
+    const motionStyle = card?.rarity === "R"
+        ? ""
+        : `--card-breeze-delay:-${((stableCardSeed(`${card?.id || ""}:${card?.name || ""}:${card?.image || card?.thumbnail || ""}`) % 7000) / 1000).toFixed(3)}s;`;
+    const art = img
+        ? `<img class="${imageClass}" src="${escapeHtml(img)}" alt="${escapeHtml(card.name)}" style="width:100%;height:100%;object-fit:cover;${motionStyle}" onerror="this.style.display='none'">`
+        : `<div style="width:100%;height:100%;display:grid;place-items:center;font-size:28px;font-weight:900;color:rgba(255,255,255,.6)">${escapeHtml(card.name?.[0] || "?")}</div>`;
+    const effect = card?.rarity === "R" ? "" : '<span class="card-breeze-overlay" aria-hidden="true"></span>';
+    return `${art}${effect}`;
 }
 
 function spawnShatterFragments(container, count) {
@@ -4071,8 +4095,8 @@ export function playSSRMonsterCinematic(attribute = "none") {
 export function playSpellCinematic(attribute = "none", cardName = "", rarity = "N") {
     if (!isBrowser) return Promise.resolve();
 
-    const bf = document.querySelector(".battlefield");
     const container = document.querySelector(".battle-screen") || document.body;
+    const battleScreen = document.querySelector(".battle-screen");
     const cx = window.innerWidth / 2;
     const cy = window.innerHeight * 0.45;
 
@@ -4084,10 +4108,7 @@ export function playSpellCinematic(attribute = "none", cardName = "", rarity = "
     const glowColor = attrGlow[attribute] || "rgba(85,216,229,.12)";
 
     // === 阶段1：镜头快速推进 + 暗角加深 (0-300ms) ===
-    if (bf) {
-        bf.style.transition = "transform 0.3s cubic-bezier(.3,1,.4,1)";
-        bf.style.transform = "translateX(-50%) scale(1.12)";
-    }
+    setBattleCamera(battleScreen, { scale: 1.12, duration: 300 });
     const vig = document.createElement("div");
     vig.style.cssText = `position:fixed; inset:0; z-index:196; pointer-events:none; background:radial-gradient(ellipse at 50% 45%, transparent 30%, rgba(0,0,0,.55) 100%); animation:hitVignette .4s ease-out forwards;`;
     container.appendChild(vig);
@@ -4109,10 +4130,7 @@ export function playSpellCinematic(attribute = "none", cardName = "", rarity = "
             removeAfter(p, 600);
         }
 
-        if (bf) {
-            bf.style.transition = "transform 0.15s ease-out";
-            bf.style.transform = "translateX(-50%) scale(1.08) translateY(-2px)";
-        }
+        setBattleCamera(battleScreen, { y: -2, scale: 1.08, duration: 150 });
     }, 300);
 
     // === 阶段3：能量爆发 + 镜头回弹 (600-900ms) ===
@@ -4129,10 +4147,7 @@ export function playSpellCinematic(attribute = "none", cardName = "", rarity = "
             removeAfter(ring, 700);
         }
 
-        if (bf) {
-            bf.style.transition = "transform 0.3s cubic-bezier(.25,.8,.25,1)";
-            bf.style.transform = "translateX(-50%) scale(1)";
-        }
+        setBattleCamera(battleScreen, { duration: 300 });
         screenFlash(glowColor.replace(/[\d.]+\)$/, ".1)"));
     }, 600);
 

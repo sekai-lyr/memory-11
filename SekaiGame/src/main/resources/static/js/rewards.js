@@ -56,6 +56,7 @@ export function calculateMatchReward(result, matchData, collection = null) {
 
 export function applyReward(collection, reward) {
     if (!reward || reward.duelCoins === undefined) return false;
+    const result = reward.result || "win";
 
     // 一次性奖励检查
     if (reward.claimId) {
@@ -67,8 +68,8 @@ export function applyReward(collection, reward) {
     collection.currency.duelCoins = Math.max(0, (collection.currency.duelCoins || 0) + reward.duelCoins);
     collection.statistics.duelsPlayed++;
 
-    if (reward.result === "win") collection.statistics.wins++;
-    else if (reward.result === "loss") collection.statistics.losses++;
+    if (result === "win") collection.statistics.wins++;
+    else if (result === "loss") collection.statistics.losses++;
     else collection.statistics.draws++;
 
     // 更新每日首次胜利标记

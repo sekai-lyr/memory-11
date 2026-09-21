@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 global.document = { createElement: () => ({ textContent: "" }) };
 
 const { createDefaultCollection, createDemoCollection, addCard, removeCard, getCardCount, hasCard, enableDemoMode, addDuelPoints, spendDuelPoints, addShards, spendShards, getShardCount, canCraft, craftCard, dismantleCard, addArt, hasArt, setSelectedArt, getSelectedArt, claimReward, hasClaimedReward, getPityCount, incrementPity, resetPity, SHARD_VALUES, CRAFT_COSTS } = await import("../js/collection.js");
-const { cardDatabase } = await import("../js/cards.js");
+const { ALL_CARDS } = await import("../js/catalog.js");
+const TEST_CARD = ALL_CARDS.find(card => card.enabled !== false);
+const TEST_CARD_ID = TEST_CARD.id;
 
 describe("收藏系统", () => {
     it("新存档生成基础收藏", () => {
@@ -15,44 +17,44 @@ describe("收藏系统", () => {
     });
     it("添加卡牌会累加数量", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 2);
-        addCard(col, "fire_001", 1);
-        assert.equal(getCardCount(col, "fire_001"), 3);
+        addCard(col, TEST_CARD_ID, 2);
+        addCard(col, TEST_CARD_ID, 1);
+        assert.equal(getCardCount(col, TEST_CARD_ID), 3);
     });
     it("超过3张自动转碎片", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 2);
-        const result = addCard(col, "fire_001", 2, cardDatabase);
-        assert.equal(getCardCount(col, "fire_001"), 3);
+        addCard(col, TEST_CARD_ID, 2);
+        const result = addCard(col, TEST_CARD_ID, 2, ALL_CARDS);
+        assert.equal(getCardCount(col, TEST_CARD_ID), 3);
         assert.ok(result.shardsEarned > 0);
     });
     it("数量不能为负", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 1);
-        const result = removeCard(col, "fire_001", 5);
+        addCard(col, TEST_CARD_ID, 1);
+        const result = removeCard(col, TEST_CARD_ID, 5);
         assert.equal(result, false);
-        assert.equal(getCardCount(col, "fire_001"), 1);
+        assert.equal(getCardCount(col, TEST_CARD_ID), 1);
     });
     it("不存在的卡牌ID被拒绝", () => {
         const col = createDefaultCollection();
-        addCard(col, "nonexistent", 1, cardDatabase);
+        addCard(col, "nonexistent", 1, ALL_CARDS);
         assert.equal(getCardCount(col, "nonexistent"), 0);
     });
     it("演示模式正确解锁", () => {
         const col = createDefaultCollection();
-        enableDemoMode(col, cardDatabase);
+        enableDemoMode(col, ALL_CARDS);
         assert.equal(col.settings.demoMode, true);
         assert.ok(col.currency.duelCoins > 90000);
-        cardDatabase.forEach(c => {
+        ALL_CARDS.forEach(c => {
             if (c.enabled !== false) assert.ok(getCardCount(col, c.id) >= 3);
         });
     });
     it("新卡加入后旧存档不会损坏", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 2);
+        addCard(col, TEST_CARD_ID, 2);
         const raw = JSON.stringify(col);
         const parsed = JSON.parse(raw);
-        assert.equal(parsed.cards["fire_001"], 2);
+        assert.equal(parsed.cards[TEST_CARD_ID], 2);
     });
     it("导入损坏存档时使用安全默认值", async () => {
         const { importSave } = await import("../js/storage.js");
@@ -61,10 +63,10 @@ describe("收藏系统", () => {
     });
     it("删除卡组不影响收藏", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 3);
-        const before = getCardCount(col, "fire_001");
+        addCard(col, TEST_CARD_ID, 3);
+        const before = getCardCount(col, TEST_CARD_ID);
         assert.equal(before, 3);
-        assert.equal(getCardCount(col, "fire_001"), 3);
+        assert.equal(getCardCount(col, TEST_CARD_ID), 3);
     });
     it("货币操作正确", () => {
         const col = createDefaultCollection();
@@ -80,25 +82,25 @@ describe("收藏系统", () => {
 describe("碎片系统", () => {
     it("分解卡牌获得碎片", () => {
         const col = createDefaultCollection();
-        addCard(col, "fire_001", 3);
-        const result = dismantleCard(col, "fire_001", cardDatabase);
+        addCard(col, TEST_CARD_ID, 3);
+        const result = dismantleCard(col, TEST_CARD_ID, ALL_CARDS);
         assert.equal(result.success, true);
-        assert.equal(result.shards, SHARD_VALUES[cardDatabase.find(c => c.id === "fire_001").rarity]);
+        assert.equal(result.shards, SHARD_VALUES[TEST_CARD.rarity]);
     });
     it("碎片不足不能制作", () => {
         const col = createDefaultCollection();
-        const check = canCraft(col, "fire_001", cardDatabase);
+        const check = canCraft(col, TEST_CARD_ID, ALL_CARDS);
         assert.equal(check.canCraft, false);
     });
     it("碎片足够可以制作", () => {
         const col = createDefaultCollection();
-        const card = cardDatabase.find(c => c.id === "fire_001");
+        const card = TEST_CARD;
         addShards(col, card.rarity, 999);
-        const check = canCraft(col, "fire_001", cardDatabase);
+        const check = canCraft(col, TEST_CARD_ID, ALL_CARDS);
         assert.equal(check.canCraft, true);
-        const result = craftCard(col, "fire_001", cardDatabase);
+        const result = craftCard(col, TEST_CARD_ID, ALL_CARDS);
         assert.equal(result.success, true);
-        assert.equal(getCardCount(col, "fire_001"), 1);
+        assert.equal(getCardCount(col, TEST_CARD_ID), 1);
     });
 });
 

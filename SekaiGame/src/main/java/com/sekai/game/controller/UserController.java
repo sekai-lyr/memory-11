@@ -3,6 +3,7 @@ package com.sekai.game.controller;
 import com.sekai.game.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -15,6 +16,7 @@ public class UserController {
     private UserService userService;
 
     @GetMapping("/{userId}")
+    @PreAuthorize("@userAccess.isCurrentUser(#userId)")
     public ResponseEntity<?> getUser(@PathVariable Long userId) {
         return userService.getUserById(userId)
             .map(user -> {
@@ -36,6 +38,7 @@ public class UserController {
     }
 
     @PutMapping("/{userId}")
+    @PreAuthorize("@userAccess.isCurrentUser(#userId)")
     public ResponseEntity<?> updateUser(@PathVariable Long userId, @RequestBody Map<String, Object> body) {
         try {
             return ResponseEntity.ok(userService.updateUser(userId, body));
@@ -45,6 +48,7 @@ public class UserController {
     }
 
     @GetMapping("/{userId}/stats")
+    @PreAuthorize("@userAccess.isCurrentUser(#userId)")
     public ResponseEntity<?> getUserStats(@PathVariable Long userId) {
         try {
             return ResponseEntity.ok(userService.getUserStats(userId));
@@ -54,11 +58,13 @@ public class UserController {
     }
 
     @GetMapping("/{userId}/cards")
+    @PreAuthorize("@userAccess.isCurrentUser(#userId)")
     public ResponseEntity<?> getUserCards(@PathVariable Long userId) {
         return ResponseEntity.ok(userService.getUserCards(userId));
     }
 
     @PostMapping("/{userId}/coins")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<?> updateCoins(@PathVariable Long userId, @RequestBody Map<String, Integer> body) {
         try {
             int delta = body.getOrDefault("delta", 0);

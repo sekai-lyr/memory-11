@@ -1,12 +1,12 @@
-﻿/**
+/**
  * main.js - 产品入口：认证、存档、游戏大厅与决斗流程
  */
 import { Player, GameState } from "./model.js";
-import { GameEngine } from "./engine.js?v=1.7.19";
+import { GameEngine } from "./engine.js?v=1.7.20";
 import { GameUI } from "./ui.js?v=1.7.21";
 import { GameController } from "./controller.js?v=1.6.27";
-import { CardGameApp } from "./app.js?v=1.8.3";
-import { ALL_CARDS, getCardById, hydrateCardArt } from "./catalog.js?v=1.8.4";
+import { CardGameApp } from "./app.js?v=1.8.5";
+import { ALL_CARDS, getCardById, hydrateCardArt } from "./catalog.js?v=1.8.6-original";
 import { getAIDeck } from "./decks.js?v=1.7.1";
 import { SeededRandom } from "./rng.js";
 import { GAME_CONFIG } from "./constants.js";
@@ -17,6 +17,7 @@ import { createDeck } from "./deck.js?v=1.7.4";
 import { calculateMatchReward, applyReward } from "./rewards.js?v=1.7.4";
 import * as api from "./api.js?v=1.7.4";
 import { saveAuth, loadAuth, clearAuth, isAuthenticated } from "./auth.js";
+import { playAuthIgnition } from "./card-ignition.js?v=1.0.0";
 
 function showFatalGameError(error) {
     const message = error instanceof Error
@@ -48,7 +49,7 @@ const authForm = document.getElementById("auth-form");
 const authError = document.getElementById("auth-error");
 const authTabs = document.querySelectorAll("[data-auth-mode]");
 const nickField = document.querySelector(".auth-nick-field");
-let authMode = "login";
+let authMode = window.__nightcordAuthMode || "login";
 
 // 离线用户存储
 const OFFLINE_USERS_KEY = "nightcord_offline_users";
@@ -68,18 +69,10 @@ function verifyOfflineUser(username, password) {
     return null;
 }
 
-// 预置用户：sekai / sekai-demo-pass
-(function seedOfflineUsers() {
-    const users = getOfflineUsers();
-    if (!users["sekai"]) {
-        users["sekai"] = { password: "sekai-demo-pass", nickname: "sekai" };
-        localStorage.setItem(OFFLINE_USERS_KEY, JSON.stringify(users));
-    }
-})();
-
 authTabs.forEach(tab => {
     tab.addEventListener("click", () => {
         authMode = tab.dataset.authMode;
+        window.__nightcordAuthMode = authMode;
         authTabs.forEach(t => t.classList.toggle("active", t === tab));
         nickField.classList.toggle("hidden", authMode === "login");
         authError.textContent = "";
@@ -97,15 +90,18 @@ function getPathRoute() {
 
 function showAuthScreen(mode) {
     authMode = mode;
+    window.__nightcordAuthMode = mode;
     authTabs.forEach(t => t.classList.toggle("active", t.dataset.authMode === mode));
     nickField.classList.toggle("hidden", mode === "login");
     authScreen.classList.remove("hidden");
     document.getElementById("app-shell").classList.add("is-hidden");
+    playAuthIgnition(authScreen.querySelector("[data-auth-ignition]"));
 }
 
 function attachAuthHandler() {
     const form = document.getElementById("auth-form");
     if (!form) return;
+    window.__nightcordAuthReady = true;
     form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const username = document.getElementById("auth-username").value.trim();
@@ -238,73 +234,131 @@ async function syncFromServer(userId) {
 }
 
 async function syncDuelToServer(userId, matchResult, reward, mode = "ai", stage = null) {
-    await api.recordDuel(userId, {
+    if (!userId) return;
+    const result = await api.recordDuel(userId, {
         result: matchResult,
         opponentType: mode,
         opponentName: stage?.opponent || (mode === "pvp" ? "PvP玩家" : "Nightcord AI"),
         coinsEarned: reward?.duelCoins || 0,
     });
-    await api.updateUser(userId, { duelCoins: collection.currency.duelCoins });
+    if (result.success && Number.isFinite(Number(result.duelCoins))) {
+        collection.currency.duelCoins = Number(result.duelCoins);
+        saveData(collection);
+        app?.renderTopbar();
+    }
+}
+
+async function waitForAuthenticatedSession(userId) {
+    const retryDelays = [0, 100, 250, 500, 800, 1200];
+    for (const delay of retryDelays) {
+        if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1500);
+        try {
+            const response = await fetch(`/api/users/${encodeURIComponent(userId)}`, {
+                credentials: "include",
+                headers: { Accept: "application/json" },
+                signal: controller.signal,
+            });
+            if (response.ok) return true;
+        } catch {
+            // Cookie persistence and the first navigation can finish on different ticks.
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
+    return false;
 }
 
 // ---- App Start ----
 async function startApp() {
+    const appShell = document.getElementById("app-shell");
+    const appLoading = document.getElementById("app-loading");
     authScreen.classList.add("hidden");
-    document.getElementById("app-shell").classList.remove("is-hidden");
+    appShell.classList.add("is-hidden");
+    appLoading?.classList.remove("is-hidden");
 
-    collection = ensureProfile(loadSave() || createNewProfile());
+    try {
+        collection = ensureProfile(loadSave() || createNewProfile());
+        const auth = loadAuth();
 
-    // 测试模式：全卡x3 + 999999决斗币（仅在设置中手动开启时生效）
-    if (collection.settings.demoMode) {
-        enableDemoMode(collection, ALL_CARDS);
-        collection.currency.duelCoins = 999999;
-    }
-
-    saveData(collection);
-
-    const auth = loadAuth();
-    if (auth?.userId) {
-        let synced = false;
-        try { synced = await syncFromServer(auth.userId); } catch (e) { synced = false; }
-        if (!synced) {
+        // 登录后的 Cookie 可能在页面跳转后的首个事件循环才可用。
+        // 先确认会话，再启动本地存档同步，避免把短暂的 403 当成登录失效。
+        if (auth?.userId && !(await waitForAuthenticatedSession(auth.userId))) {
             clearAuth();
-            document.getElementById("app-shell").classList.add("is-hidden");
             authScreen.classList.remove("hidden");
             authError.textContent = "登录状态已失效，请重新登录以同步服务器卡牌";
             return;
         }
-        if (String(auth.username || "").toLowerCase() === "sekai") {
-            collection.cards = Object.fromEntries(
-                ALL_CARDS.filter(card => card.enabled !== false).map(card => [card.id, 3]),
-            );
-            collection.inventorySynced = true;
+
+        // 测试模式：全卡x3 + 999999决斗币（仅在设置中手动开启时生效）
+        if (collection.settings.demoMode) {
+            enableDemoMode(collection, ALL_CARDS);
+            collection.currency.duelCoins = 999999;
         }
+
+        if (auth?.userId) {
+            try {
+                const csrfResult = await api.ensureCsrf();
+                if (!csrfResult.success) throw new Error("CSRF 初始化失败");
+            } catch (e) {
+                clearAuth();
+                authScreen.classList.remove("hidden");
+                authError.textContent = "登录状态已失效，请重新登录以同步服务器卡牌";
+                return;
+            }
+        }
+
         saveData(collection);
+
+        if (auth?.userId) {
+            let synced = false;
+            try {
+                synced = await syncFromServer(auth.userId);
+            } catch (e) { synced = false; }
+            if (!synced) {
+                clearAuth();
+                authScreen.classList.remove("hidden");
+                authError.textContent = "登录状态已失效，请重新登录以同步服务器卡牌";
+                return;
+            }
+            saveData(collection);
+        }
+
+        app = new CardGameApp(collection, {
+            onStartDuel: config => createNewGame(config.mode, config.deck, config.pvpClient, config.gameInfo, config),
+        });
+
+        // Logout button in settings
+        const originalRenderSettings = app.renderSettings.bind(app);
+        app.renderSettings = function() {
+            originalRenderSettings();
+            const settingsPanel = this.screenRoot.querySelector(".settings-panel");
+            if (settingsPanel) {
+                const logoutBtn = document.createElement("button");
+                logoutBtn.className = "secondary-action";
+                logoutBtn.style.marginTop = "12px";
+                logoutBtn.style.borderColor = "rgba(255,111,141,.4)";
+                logoutBtn.style.color = "#ffc4d0";
+                logoutBtn.textContent = "退出登录";
+                logoutBtn.addEventListener("click", async () => {
+                    try { await api.logout(); } catch { /* 本地状态仍需清理 */ }
+                    clearAuth();
+                    location.reload();
+                });
+                settingsPanel.appendChild(logoutBtn);
+            }
+        };
+    } catch (error) {
+        appShell.classList.add("is-hidden");
+        authScreen.classList.remove("hidden");
+        authError.textContent = "大厅初始化失败，请刷新后重试";
+        showFatalGameError(error);
+    } finally {
+        appLoading?.classList.add("is-hidden");
     }
 
-    app = new CardGameApp(collection, {
-        onStartDuel: config => createNewGame(config.mode, config.deck, config.pvpClient, config.gameInfo, config),
-    });
-
-    // Logout button in settings
-    const originalRenderSettings = app.renderSettings.bind(app);
-    app.renderSettings = function() {
-        originalRenderSettings();
-        const settingsPanel = this.screenRoot.querySelector(".settings-panel");
-        if (settingsPanel) {
-            const logoutBtn = document.createElement("button");
-            logoutBtn.className = "secondary-action";
-            logoutBtn.style.marginTop = "12px";
-            logoutBtn.style.borderColor = "rgba(255,111,141,.4)";
-            logoutBtn.style.color = "#ffc4d0";
-            logoutBtn.textContent = "退出登录";
-            logoutBtn.addEventListener("click", () => {
-                clearAuth();
-                location.reload();
-            });
-            settingsPanel.appendChild(logoutBtn);
-        }
-    };
+    if (app) appShell.classList.remove("is-hidden");
 }
 
 // ---- Game Logic ----
@@ -375,6 +429,11 @@ function createNewGame(mode = "ai", playerDeck = app.getSelectedDeck(), pvpClien
     currentController.onGameOver = result => settleMatch(result);
     currentUI.clearLog();
     currentUI.showBattle();
+    if (window.matchMedia?.("(max-width: 720px)").matches) {
+        document.body.classList.add("duel-log-collapsed");
+    } else {
+        document.body.classList.remove("duel-log-collapsed");
+    }
 
     if (mode === "pvp" && pvpClient) {
         // PvP模式：根据先手/后手决定是否立即行动
@@ -441,7 +500,7 @@ function settleMatch({ winner, isDraw }) {
 
     // Sync duel to backend
     const auth = loadAuth();
-    if (auth) syncDuelToServer(auth.userId, result, reward, currentMatch.mode, currentMatch.stage).catch(() => {});
+    if (auth?.userId) syncDuelToServer(auth.userId, result, reward, currentMatch.mode, currentMatch.stage).catch(() => {});
 }
 
 function returnHome() {
@@ -501,9 +560,7 @@ function initializeDomBindings() {
 if (new URLSearchParams(location.search).has("reset")) {
     localStorage.removeItem("dimensional_duel_save");
     localStorage.removeItem("nightcord_auth");
-    localStorage.setItem("nightcord_offline_users", JSON.stringify({
-        "sekai": { password: "sekai-demo-pass", nickname: "sekai" }
-    }));
+    localStorage.removeItem(OFFLINE_USERS_KEY);
     history.replaceState(null, "", location.pathname);
 }
 
@@ -511,7 +568,7 @@ if (new URLSearchParams(location.search).has("reset")) {
 const route = getPathRoute();
 if (route === "login") {
     // /login → 强制显示登录页
-    showAuthScreen("login");
+    showAuthScreen(window.__nightcordAuthModeTouched ? window.__nightcordAuthMode : "login");
 } else if (route === "register") {
     // /register → 强制显示注册页
     showAuthScreen("register");
@@ -524,8 +581,10 @@ if (route === "login") {
     }
 }
 
-if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", initializeDomBindings, { once: true });
-} else {
-    initializeDomBindings();
+if (route === "game") {
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", initializeDomBindings, { once: true });
+    } else {
+        initializeDomBindings();
+    }
 }

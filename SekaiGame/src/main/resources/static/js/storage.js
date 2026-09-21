@@ -42,7 +42,6 @@ function syncToBackend(data) {
         try {
             await api.updateUser(userId, {
                 nickname: data.profile?.name,
-                duelCoins: data.currency?.duelCoins,
             });
             // 先获取服务端已有卡组
             const serverResult = await api.getUserDecks(userId);

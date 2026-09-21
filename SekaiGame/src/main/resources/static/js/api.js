@@ -6,31 +6,64 @@
 const BASE_URL = ""; // 同源，使用相对路径
 const FETCH_TIMEOUT = 10000; // 云服务器首次请求可能较慢
 
+function readCookie(name) {
+    if (typeof document === "undefined") return "";
+    const prefix = `${encodeURIComponent(name)}=`;
+    const cookie = document.cookie.split("; ").find(value => value.startsWith(prefix));
+    return cookie ? decodeURIComponent(cookie.slice(prefix.length)) : "";
+}
+
 async function request(path, options = {}) {
+    const method = String(options.method || "GET").toUpperCase();
+    const { headers: optionHeaders, ...requestOptions } = options;
+    const headers = { Accept: "application/json", ...optionHeaders };
+    if (requestOptions.body != null && !headers["Content-Type"]) {
+        headers["Content-Type"] = "application/json";
+    }
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+        const csrfToken = readCookie("XSRF-TOKEN");
+        if (csrfToken) headers["X-XSRF-TOKEN"] = csrfToken;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
     try {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT);
         const response = await fetch(`${BASE_URL}${path}`, {
-            headers: { "Content-Type": "application/json", ...options.headers },
+            ...requestOptions,
+            headers,
+            credentials: "include",
             signal: controller.signal,
-            ...options,
         });
-        clearTimeout(timer);
-        const data = await response.json();
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) return { success: false, reason: data.reason || `HTTP ${response.status}` };
         return { success: true, ...data };
     } catch (error) {
         return { success: false, reason: "网络连接失败" };
+    } finally {
+        clearTimeout(timer);
     }
 }
 
 // Auth
 export function register(username, password, nickname) {
-    return request("/api/auth/register", { method: "POST", body: JSON.stringify({ username, password, nickname }) });
+    return authenticate("/api/auth/register", { username, password, nickname });
 }
 
 export function login(username, password) {
-    return request("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password }) });
+    return authenticate("/api/auth/login", { username, password });
+}
+
+async function authenticate(path, body) {
+    const result = await request(path, { method: "POST", body: JSON.stringify(body) });
+    if (result.success) await ensureCsrf();
+    return result;
+}
+
+export function ensureCsrf() {
+    return request("/api/security/csrf", { cache: "no-store" });
+}
+
+export function logout() {
+    return request("/api/auth/logout", { method: "POST" });
 }
 
 // User
@@ -93,6 +126,20 @@ export function openPackServer(userId, packType = "nightcord", count = 8) {
     return request(`/api/collection/${userId}/pack`, {
         method: "POST",
         body: JSON.stringify({ packType, count }),
+    });
+}
+
+export function craftCardServer(userId, cardId) {
+    return request(`/api/collection/${userId}/craft`, {
+        method: "POST",
+        body: JSON.stringify({ cardId }),
+    });
+}
+
+export function dismantleCardServer(userId, cardId) {
+    return request(`/api/collection/${userId}/dismantle`, {
+        method: "POST",
+        body: JSON.stringify({ cardId }),
     });
 }
 

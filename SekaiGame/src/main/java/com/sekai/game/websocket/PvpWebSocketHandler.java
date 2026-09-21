@@ -14,18 +14,20 @@ import java.io.IOException;
 import java.security.SecureRandom;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicInteger;
 
 @Component
 public class PvpWebSocketHandler extends TextWebSocketHandler {
 
     private static final Logger logger = LoggerFactory.getLogger(PvpWebSocketHandler.class);
+    private static final int MAX_MESSAGE_LENGTH = 64 * 1024;
+    private static final int MIN_DECK_SIZE = 40;
+    private static final int MAX_DECK_SIZE = 60;
+    private static final int MAX_NAME_LENGTH = 40;
     private final ObjectMapper objectMapper = new ObjectMapper();
     private final SecureRandom secureRandom = new SecureRandom();
 
     // Room management
     private final Map<String, PvpRoom> rooms = new ConcurrentHashMap<>();
-    private final AtomicInteger nextRoomId = new AtomicInteger(1);
 
     // Session to room mapping
     private final Map<String, PvpPlayer> sessionPlayers = new ConcurrentHashMap<>();
@@ -58,6 +60,11 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
     @Override
     protected void handleTextMessage(WebSocketSession session, TextMessage message) {
         try {
+            if (message.getPayloadLength() > MAX_MESSAGE_LENGTH) {
+                sendJson(session, Map.of("type", "error", "reason", "消息过大"));
+                session.close(new CloseStatus(1009, "Message too big"));
+                return;
+            }
             JsonNode msg = objectMapper.readTree(message.getPayload());
             String type = msg.has("type") ? msg.get("type").asText() : "";
 
@@ -78,8 +85,15 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleCreateRoom(WebSocketSession session, JsonNode msg) throws IOException {
-        String roomId = String.valueOf(nextRoomId.getAndIncrement());
-        String playerName = msg.has("name") ? msg.get("name").asText() : "Player 1";
+        if (sessionPlayers.containsKey(session.getId())) {
+            sendJson(session, Map.of("type", "error", "reason", "你已经在房间中"));
+            return;
+        }
+        String roomId;
+        do {
+            roomId = String.valueOf(100000 + secureRandom.nextInt(900000));
+        } while (rooms.containsKey(roomId));
+        String playerName = normalizeName(msg.path("name").asText(null), "Player 1");
 
         PvpRoom room = new PvpRoom();
         room.host = session;
@@ -100,6 +114,10 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
 
     private void handleJoinRoom(WebSocketSession session, JsonNode msg) throws IOException {
         String roomId = msg.has("roomId") ? msg.get("roomId").asText() : "";
+        if (sessionPlayers.containsKey(session.getId()) || !roomId.matches("\\d{6}")) {
+            sendJson(session, Map.of("type", "error", "reason", "房间号无效"));
+            return;
+        }
         PvpRoom room = rooms.get(roomId);
 
         if (room == null) {
@@ -111,7 +129,7 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        String playerName = msg.has("name") ? msg.get("name").asText() : "Player 2";
+        String playerName = normalizeName(msg.path("name").asText(null), "Player 2");
         room.guest = session;
         room.guestName = playerName;
 
@@ -138,8 +156,8 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
         if (room == null) return;
 
         JsonNode deck = msg.has("deck") ? msg.get("deck") : objectMapper.createArrayNode();
-        if (room.gameStarted || !deck.isArray() || deck.isEmpty()) {
-            sendJson(session, Map.of("type", "error", "reason", "Invalid deck submission"));
+        if (room.gameStarted || !isValidDeck(deck)) {
+            sendJson(session, Map.of("type", "error", "reason", "卡组必须为40至60张，且同名卡不超过3张"));
             return;
         }
         if (player.playerIndex == 0) {
@@ -279,12 +297,40 @@ public class PvpWebSocketHandler extends TextWebSocketHandler {
 
         WebSocketSession opponent = room.getOpponent(session);
         if (opponent != null && opponent.isOpen()) {
+            String message = normalizeMessage(msg.path("message").asText(null));
+            if (message.isBlank()) return;
             ObjectNode chatMsg = objectMapper.createObjectNode();
             chatMsg.put("type", "chat");
             chatMsg.put("name", player.playerName);
-            chatMsg.set("message", msg.get("message"));
+            chatMsg.put("message", message);
             sendJson(opponent, chatMsg);
         }
+    }
+
+    private boolean isValidDeck(JsonNode deck) {
+        if (deck == null || !deck.isArray() || deck.size() < MIN_DECK_SIZE || deck.size() > MAX_DECK_SIZE) {
+            return false;
+        }
+        Map<String, Integer> counts = new HashMap<>();
+        for (JsonNode card : deck) {
+            if (!card.isTextual() || card.asText().isBlank() || card.asText().length() > 50) return false;
+            String cardId = card.asText();
+            int count = counts.merge(cardId, 1, Integer::sum);
+            if (count > 3) return false;
+        }
+        return true;
+    }
+
+    private String normalizeName(String value, String fallback) {
+        if (value == null) return fallback;
+        String normalized = value.trim();
+        return normalized.isBlank() ? fallback : normalized.substring(0, Math.min(MAX_NAME_LENGTH, normalized.length()));
+    }
+
+    private String normalizeMessage(String value) {
+        if (value == null) return "";
+        String normalized = value.trim();
+        return normalized.substring(0, Math.min(500, normalized.length()));
     }
 
     private void sendJson(WebSocketSession session, Object data) {

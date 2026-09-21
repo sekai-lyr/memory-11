@@ -37,12 +37,12 @@ function setup() {
 }
 
 describe("攻击与表示形式选择规则", () => {
-    it("召唤后未攻击可以选择转为守备", () => {
+    it("召唤当回合不能手动转为守备", () => {
         const { state, engine, monster } = setup();
         const result = engine.changePosition(state.players[0], monster);
-        assert.equal(result.success, true);
-        assert.equal(monster.position, MONSTER_POSITION.DEFENSE);
-        assert.equal(monster.canAttack, false);
+        assert.equal(result.success, false);
+        assert.equal(monster.position, MONSTER_POSITION.ATTACK);
+        assert.equal(monster.canAttack, true);
     });
 
     it("攻击过后不能再转为守备", () => {

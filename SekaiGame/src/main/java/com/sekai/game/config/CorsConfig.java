@@ -20,7 +20,12 @@ public class CorsConfig {
     public CorsFilter corsFilter() {
         CorsConfiguration config = new CorsConfiguration();
         for (String origin : allowedOrigins.split(",")) {
-            config.addAllowedOrigin(origin.trim());
+            String normalized = origin.trim();
+            if (normalized.isEmpty()) continue;
+            if ("*".equals(normalized)) {
+                throw new IllegalStateException("Wildcard CORS origins cannot be used with credentials");
+            }
+            config.addAllowedOrigin(normalized);
         }
         config.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "OPTIONS"));
         config.setAllowedHeaders(List.of("*"));

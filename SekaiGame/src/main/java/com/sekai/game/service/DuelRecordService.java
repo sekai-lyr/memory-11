@@ -46,15 +46,16 @@ public class DuelRecordService {
         record.setDamageReceived(damageReceived);
         record.setCoinsEarned(coinsEarned);
 
-        user.setDuelsPlayed(user.getDuelsPlayed() + 1);
+        user.setDuelsPlayed(valueOrZero(user.getDuelsPlayed()) + 1);
         if ("win".equals(result)) {
-            user.setWins(user.getWins() + 1);
+            user.setWins(valueOrZero(user.getWins()) + 1);
         } else if ("loss".equals(result)) {
-            user.setLosses(user.getLosses() + 1);
+            user.setLosses(valueOrZero(user.getLosses()) + 1);
         } else {
-            user.setDraws(user.getDraws() + 1);
+            user.setDraws(valueOrZero(user.getDraws()) + 1);
         }
-        user.setDuelCoins(Math.max(0, user.getDuelCoins() + coinsEarned));
+        long nextCoins = (long) valueOrZero(user.getDuelCoins()) + coinsEarned;
+        user.setDuelCoins((int) Math.max(0, Math.min(Integer.MAX_VALUE, nextCoins)));
         userRepository.save(user);
 
         return duelRecordRepository.save(record);
@@ -65,17 +66,25 @@ public class DuelRecordService {
             .orElseThrow(() -> new RuntimeException("用户不存在"));
 
         Map<String, Object> stats = new HashMap<>();
-        stats.put("totalDuels", user.getDuelsPlayed());
-        stats.put("wins", user.getWins());
-        stats.put("losses", user.getLosses());
-        stats.put("draws", user.getDraws());
-        stats.put("winRate", user.getDuelsPlayed() > 0
-            ? (double) user.getWins() / user.getDuelsPlayed() * 100
+        int totalDuels = valueOrZero(user.getDuelsPlayed());
+        int wins = valueOrZero(user.getWins());
+        int losses = valueOrZero(user.getLosses());
+        int draws = valueOrZero(user.getDraws());
+        stats.put("totalDuels", totalDuels);
+        stats.put("wins", wins);
+        stats.put("losses", losses);
+        stats.put("draws", draws);
+        stats.put("winRate", totalDuels > 0
+            ? (double) wins / totalDuels * 100
             : 0);
         return stats;
     }
 
     public List<Object[]> getLeaderboard() {
         return duelRecordRepository.findTopWinners(PageRequest.of(0, 10));
+    }
+
+    private int valueOrZero(Integer value) {
+        return value == null ? 0 : value;
     }
 }

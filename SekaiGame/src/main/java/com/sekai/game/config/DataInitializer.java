@@ -12,14 +12,13 @@ import com.sekai.game.repository.UserRepository;
 import com.sekai.game.service.StarterDeckService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Component;
 
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Base64;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -34,6 +33,9 @@ public class DataInitializer implements CommandLineRunner {
     private final DeckCardRepository deckCardRepository;
     private final PasswordEncoder passwordEncoder;
     private final StarterDeckService starterDeckService;
+    private final boolean seedEnabled;
+    private final String seedUsername;
+    private final String seedPassword;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     public DataInitializer(
@@ -42,7 +44,10 @@ public class DataInitializer implements CommandLineRunner {
         UserCardRepository userCardRepository,
         DeckCardRepository deckCardRepository,
         PasswordEncoder passwordEncoder,
-        StarterDeckService starterDeckService
+        StarterDeckService starterDeckService,
+        @Value("${app.seed.enabled:false}") boolean seedEnabled,
+        @Value("${app.seed.username:sekai}") String seedUsername,
+        @Value("${app.seed.password:}") String seedPassword
     ) {
         this.cardRepository = cardRepository;
         this.userRepository = userRepository;
@@ -50,14 +55,14 @@ public class DataInitializer implements CommandLineRunner {
         this.deckCardRepository = deckCardRepository;
         this.passwordEncoder = passwordEncoder;
         this.starterDeckService = starterDeckService;
+        this.seedEnabled = seedEnabled;
+        this.seedUsername = seedUsername;
+        this.seedPassword = seedPassword;
     }
 
     @Override
     public void run(String... args) {
-        List<Card> cards = new ArrayList<>(loadCardsFromBase64());
-        cards.addAll(loadCardsFromJson("card-data/picture-extension.json"));
-        cards.addAll(loadCardsFromJson("card-data/picture-ssr7.json"));
-        cards.addAll(loadCardsFromJson("card-data/ygo-starter.json"));
+        List<Card> cards = loadCardsFromJson("full-card-pool.json");
         if (cards.isEmpty()) {
             log.error("卡牌数据为空，初始化终止");
             return;
@@ -89,7 +94,8 @@ public class DataInitializer implements CommandLineRunner {
             .filter(card -> StarterDeckService.STARTER_SERIES.equals(card.getSeries()))
             .toList();
         for (User user : userRepository.findAll()) {
-            boolean owner = "sekai".equalsIgnoreCase(user.getUsername());
+            boolean owner = seedEnabled && seedUsername != null
+                && seedUsername.equalsIgnoreCase(user.getUsername());
             int version = user.getCollectionVersion() == null ? 0 : user.getCollectionVersion();
             if (!owner && version >= StarterDeckService.COLLECTION_VERSION) {
                 continue;
@@ -122,31 +128,17 @@ public class DataInitializer implements CommandLineRunner {
     }
 
     private void seedDefaultUser() {
-        if (userRepository.findByUsername("sekai").isPresent()) {
+        if (!seedEnabled || seedUsername == null || seedUsername.isBlank()
+            || seedPassword == null || seedPassword.isBlank()
+            || userRepository.findByUsername(seedUsername.trim()).isPresent()) {
             return;
         }
         User sekai = new User();
-        sekai.setUsername("sekai");
-        sekai.setPassword(passwordEncoder.encode("123456520baba"));
-        sekai.setNickname("sekai");
+        sekai.setUsername(seedUsername.trim());
+        sekai.setPassword(passwordEncoder.encode(seedPassword));
+        sekai.setNickname(seedUsername.trim());
         sekai.setDuelCoins(99999);
         userRepository.save(sekai);
-    }
-
-    private List<Card> loadCardsFromBase64() {
-        List<Card> cards = new ArrayList<>();
-        try {
-            ClassPathResource resource = new ClassPathResource("cards-base64.txt");
-            String encoded = new String(resource.getInputStream().readAllBytes(), StandardCharsets.UTF_8)
-                .trim()
-                .replaceFirst("^\\+", "");
-            JsonNode root = objectMapper.readTree(Base64.getDecoder().decode(encoded));
-            root.forEach(node -> addParsedCard(cards, node));
-            log.info("从 cards-base64.txt 读取 {} 张卡牌", cards.size());
-        } catch (Exception exception) {
-            log.error("读取 cards-base64.txt 失败", exception);
-        }
-        return cards;
     }
 
     private List<Card> loadCardsFromJson(String resourcePath) {
@@ -185,7 +177,7 @@ public class DataInitializer implements CommandLineRunner {
             card.setCost(number(node, "cost", 0));
             card.setImage(text(node, "image", null));
             card.setDescription(text(node, "description", ""));
-            card.setEffectsJson(text(node, "effectsJson", null));
+            card.setEffectsJson(node.has("effects") ? node.get("effects").toString() : text(node, "effectsJson", null));
             card.setEnabled(!node.has("enabled") || node.get("enabled").asBoolean());
             return card;
         } catch (Exception exception) {

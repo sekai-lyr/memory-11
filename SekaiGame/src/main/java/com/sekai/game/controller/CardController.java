@@ -4,6 +4,7 @@ import com.sekai.game.entity.Card;
 import com.sekai.game.service.CardService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
@@ -54,11 +55,13 @@ public class CardController {
     }
 
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<Card> createCard(@RequestBody Card card) {
         return ResponseEntity.ok(cardService.saveCard(card));
     }
 
     @PostMapping("/batch")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<List<Card>> createCards(@RequestBody List<Card> cards) {
         return ResponseEntity.ok(cardService.saveAllCards(cards));
     }

@@ -45,6 +45,8 @@ export function createCardInstance(cardData) {
         faceUp: true,
         canAttack: false,
         hasAttackedThisTurn: false,
+        attacksMadeThisTurn: 0,
+        doubleAttackThisTurn: false,
         positionChangedThisTurn: false,
         wasFlipSummoned: false,
 
@@ -67,9 +69,11 @@ export function createCardInstance(cardData) {
 
         // ---- 新增：状态标记 ----
         cannotAttack: false,
+        cannotBeAttacked: false,
         cannotBeTargeted: false,
         cannotBeDestroyedByBattle: false,
         cannotBeDestroyedByEffect: false,
+        preventsBattleDamage: false,
         attackLocked: false,        // 被"寄往遥远彼岸的信"永久封锁攻击
     };
 }
@@ -89,6 +93,7 @@ export class Player {
         this.fieldZone = null; // 场地卡槽（每个玩家最多1张）
         this.graveyard = [];
         this.banished = [];
+        this._tempBanished = [];
         this.extraDeck = [];
 
         // 回合状态
@@ -161,17 +166,20 @@ export class Player {
                 c.cannotAttack = c.attackLocked;
             }
             c.hasAttackedThisTurn = false;
+            c.attacksMadeThisTurn = 0;
             c.positionChangedThisTurn = false;
             c.oncePerTurnUsed = false;
             // 清除回合级效果标记
-            c.cannotBeTargeted = false;
+            c.cannotBeTargeted = c.themedState?.wardUntil != null;
+            c.cannotBeAttacked = false;
             c.cannotBeDestroyedByBattle = false;
             c.destructionPreventedThisTurn = false;
+            c.preventsBattleDamage = false;
             c.cannotActivateThisTurn = false;
             c.cancelAttack = false;
             c.effectNegated = false;
             c.doubleAttackThisTurn = false;
-            c.cannotUseAsMaterial = false;
+            c.cannotUseAsMaterial = !!c.isToken;
             c.attackRedirector = false;
             c.redirectValue = 0;
             c._redirectUsedThisTurn = false;
